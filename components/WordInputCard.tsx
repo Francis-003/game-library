@@ -26,7 +26,7 @@ export function WordInputCard({ busy, disabled, onSubmit }: Props) {
   }
 
   return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
+    <div className="rounded-2xl border bg-card p-4 shadow-soft">
       <div className="flex items-center justify-between text-sm">
         <span className="font-medium">你的词</span>
         <span className="text-xs text-muted-foreground">提交后不能修改</span>
@@ -46,13 +46,13 @@ export function WordInputCard({ busy, disabled, onSubmit }: Props) {
           enterKeyHint="send"
           maxLength={120}
           disabled={disabled || busy || pending}
-          className="h-12 min-w-0 flex-1 rounded-lg text-base"
+          className="h-12 min-w-0 flex-1 rounded-xl text-base"
           aria-label="想一个词"
         />
         <Button
           type="submit"
           size="lg"
-          className="h-12 shrink-0 rounded-lg px-5"
+          className="h-12 shrink-0 rounded-xl px-5"
           disabled={!result.ok || disabled || busy || pending}
         >
           {pending || busy ? "提交中" : "提交"}

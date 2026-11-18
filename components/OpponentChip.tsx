@@ -9,7 +9,7 @@ export function OpponentChip({ view }: { view: RoomView }) {
     : view.opponentSealed ? "bg-primary"
       : "bg-primary/50 animate-pulse motion-reduce:animate-none";
   return (
-    <span className="inline-flex items-center gap-2 rounded-full border bg-card px-3 py-1 text-sm">
+    <span className="inline-flex items-center gap-2 rounded-full border bg-card px-3 py-1 text-sm shadow-soft">
       <span className={cn("size-2 rounded-full", dot)} aria-hidden />
       <span className="truncate">{name}</span>
       <span className="text-muted-foreground">{state}</span>

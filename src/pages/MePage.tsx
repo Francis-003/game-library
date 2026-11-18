@@ -58,9 +58,15 @@ export function MePage() {
         ) : (
           <div className="divide-y rounded-2xl border bg-card shadow-soft">
             {rooms.map(room => (
-              <a key={room.code} href={`#/g/tongci/r/${room.code}`} className="pressable flex items-center gap-3 px-4 py-3">
+              <a
+                key={`${room.game ?? "tongci"}:${room.code}`}
+                href={`#/g/${room.game ?? "tongci"}/r/${room.code}`}
+                className="pressable flex items-center gap-3 px-4 py-3"
+              >
                 <span className="font-mono text-base font-semibold tracking-[0.2em]">{room.code}</span>
-                <span className="text-xs text-muted-foreground">{room.seat === "a" ? "房主" : "成员"} · {room.nick}</span>
+                <span className="text-xs text-muted-foreground">
+                  {room.game === "dreamer" ? "白日梦想家" : "同词遇见"} · {room.seat === "a" ? "房主" : "成员"} · {room.nick}
+                </span>
                 <span className="min-w-0 flex-1" />
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
               </a>

@@ -13,7 +13,7 @@ export function HistoryTimeline({ seat, history, myNick, opponentNick }: Props) 
   const mine = (entry: HistoryEntry) => (seat === "a" ? entry.wordA : entry.wordB);
   const theirs = (entry: HistoryEntry) => (seat === "a" ? entry.wordB : entry.wordA);
   return (
-    <section className="rounded-xl border bg-card">
+    <section className="rounded-2xl border bg-card shadow-soft">
       <h2 className="border-b px-4 py-2.5 text-xs text-muted-foreground">已经出现过的词</h2>
       <ol className="divide-y">
         {history.map(entry => (

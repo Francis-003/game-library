@@ -67,12 +67,12 @@ function WaitingForGuest({ view, session }: { view: RoomView; session: Session }
 
   return (
     <>
-      <section className="rounded-xl border bg-card p-6 text-center shadow-sm">
+      <section className="rounded-2xl border bg-card p-6 text-center shadow-soft">
         <p className="text-sm text-muted-foreground">房间口令</p>
         <p className="mt-2 font-mono text-4xl font-semibold tracking-[0.3em]">{view.code}</p>
         <p className="mt-3 text-xs text-muted-foreground">把口令或链接发给 TA，两个人都到齐就开始。</p>
         <div className="mt-5 grid gap-2">
-          <Button size="lg" className="rounded-lg" onClick={() => void share()}>复制邀请链接</Button>
+          <Button size="lg" className="rounded-xl shadow-soft" onClick={() => void share()}>复制邀请链接</Button>
         </div>
         <div className="mt-4 flex items-center justify-center gap-2 text-xs text-muted-foreground">
           <Spinner className="size-3.5" />
@@ -80,7 +80,7 @@ function WaitingForGuest({ view, session }: { view: RoomView; session: Session }
         </div>
       </section>
 
-      <section className="space-y-2 rounded-xl border bg-card p-4 shadow-sm">
+      <section className="space-y-2 rounded-2xl border bg-card p-4 shadow-soft">
         <h2 className="text-sm font-medium">邀请在线好友</h2>
         {!snapshot && (
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -108,7 +108,7 @@ function WaitingForGuest({ view, session }: { view: RoomView; session: Session }
 
 function LockedCard({ view }: { view: RoomView }) {
   return (
-    <section className="rounded-xl border border-primary/25 bg-primary/5 p-6 text-center">
+    <section className="rounded-2xl border border-primary/25 bg-primary/5 p-6 text-center shadow-soft">
       <p className="text-sm text-muted-foreground">你这一轮的词已锁定</p>
       <p className="mt-3 text-3xl font-semibold break-words">{view.myWord}</p>
       <div className="mt-5 flex items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -206,14 +206,14 @@ export function RoomPage({ code }: { code: string }) {
               <>
                 <RevealPanel view={view} />
                 {view.status === "matched" ? (
-                  <Button size="lg" className="w-full rounded-lg" disabled={room.busy} onClick={() => void rematch().catch(error => toast.error(message(error)))}>
+                  <Button size="lg" className="w-full rounded-xl" disabled={room.busy} onClick={() => void rematch().catch(error => toast.error(message(error)))}>
                     再来一局
                   </Button>
                 ) : view.status === "ended" ? null : (
                   <div className="space-y-2">
                     <Button
                       size="lg"
-                      className="w-full rounded-lg"
+                      className="w-full rounded-xl"
                       disabled={room.busy}
                       onClick={() => void room.actions?.nextRound()}
                     >
@@ -225,7 +225,7 @@ export function RoomPage({ code }: { code: string }) {
               </>
             )}
             {view.status === "ended" && (
-              <section className="rounded-xl border bg-card p-6 text-center shadow-sm">
+              <section className="rounded-2xl border bg-card p-6 text-center shadow-soft">
                 <p className="text-xl font-semibold">这一局停在第 {view.round} 轮</p>
                 <p className="mt-2 text-sm text-muted-foreground">
                   {view.endedBy === view.seat ? "你结束了这一局。" : "TA 结束了这一局。"}
@@ -236,7 +236,7 @@ export function RoomPage({ code }: { code: string }) {
                     你这一轮写的是「{view.myWord}」，TA 没说完，所以按规则没有揭开。
                   </p>
                 )}
-                <Button size="lg" className="mt-5 w-full rounded-lg" disabled={room.busy} onClick={() => void rematch().catch(error => toast.error(message(error)))}>
+                <Button size="lg" className="mt-5 w-full rounded-xl" disabled={room.busy} onClick={() => void rematch().catch(error => toast.error(message(error)))}>
                   再来一局
                 </Button>
               </section>

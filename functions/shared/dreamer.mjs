@@ -7,9 +7,6 @@ export const OFFER_FACTORS = [
   0.75, 0.85, 0.95,
 ];
 
-// 银行家可讲价幅度：报价不得偏离参考价 ±20%，服务端强制校验。
-export const OFFER_ADJUST = 0.2;
-
 // 台词长度上限（字符数）。
 export const MAX_LINE = 60;
 
@@ -75,11 +72,12 @@ export function baseOffer(boxes, offersCount) {
   return Math.max(0.01, Math.round(raw * 100) / 100);
 }
 
-// 报价必须落在参考价 ±20% 内（容忍两位小数取整的误差）。
-export function offerWithinAdjust(offer, base) {
-  if (offer < 0) return false;
-  const spread = base * OFFER_ADJUST + 0.01;
-  return offer >= base - spread && offer <= base + spread;
+// 未翻开箱子的面额均值（含幸运箱），即金额板的平均值。只作为出价提示，不构成限制。
+export function rawAverage(boxes) {
+  const remaining = remainingAmounts(boxes);
+  if (!remaining.length) return 0;
+  const total = remaining.reduce((sum, value) => sum + value, 0);
+  return Math.round((total / remaining.length) * 100) / 100;
 }
 
 // crypto.getRandomValues 在 Deno 与 Node 22+ 都是全局可用。

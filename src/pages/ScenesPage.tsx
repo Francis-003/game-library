@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { api, isSeatError, message } from "@/lib/api";
-import { forgetSession, loadSession, type Session } from "@/lib/session";
+import { forgetSession, loadActiveSession, type Session } from "@/lib/session";
 import type { SceneLibrary } from "@/lib/types";
 import { toast } from "sonner";
 
@@ -19,7 +20,7 @@ function groupByCategory(builtin: SceneLibrary["builtin"]) {
 }
 
 export function ScenesPage() {
-  const [session, setSession] = useState<Session | null>(() => loadSession());
+  const [session, setSession] = useState<Session | null>(() => loadActiveSession());
   const [library, setLibrary] = useState<SceneLibrary | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -82,13 +83,19 @@ export function ScenesPage() {
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 py-6">
-      <header className="flex items-center gap-3">
-        <a href="#/g/tongci" className="text-sm text-muted-foreground underline-offset-4 hover:underline">回游戏</a>
+      <header className="flex items-center gap-2">
+        <a
+          href="#/g/tongci"
+          aria-label="返回游戏"
+          className="rounded-lg p-1.5 transition-colors hover:bg-accent active:scale-95"
+        >
+          <ArrowLeft className="size-5" />
+        </a>
         <h1 className="text-xl font-semibold tracking-tight">场景库</h1>
       </header>
 
       {!session && (
-        <p className="rounded-xl border bg-card p-4 text-sm text-muted-foreground">
+        <p className="rounded-2xl border bg-card p-4 text-sm text-muted-foreground shadow-soft">
           场景库跟着某一局走：先开一局或用口令进来，就能在这里添加你们自己的场景。
         </p>
       )}
@@ -112,7 +119,7 @@ export function ScenesPage() {
             第 1 轮从这里抽一个场景：内置 {library.builtin.length} 个，你们自己加的 {enabledCustom} 个可用。
           </p>
 
-          <section className="space-y-2 rounded-xl border bg-card p-4 shadow-sm">
+          <section className="space-y-2 rounded-2xl border bg-card p-4 shadow-soft">
             <h2 className="text-sm font-medium">添加一个场景</h2>
             <div className="flex gap-2">
               <Input
@@ -120,10 +127,10 @@ export function ScenesPage() {
                 onChange={(event) => setName(event.target.value.slice(0, 12))}
                 placeholder="例如：周末的阳台"
                 maxLength={12}
-                className="h-11 min-w-0 flex-1"
+                className="h-11 min-w-0 flex-1 rounded-xl"
                 aria-label="新场景名称"
               />
-              <Button className="h-11 shrink-0 rounded-lg px-4" disabled={busy || !name.trim()} onClick={() => void add()}>
+              <Button className="h-11 shrink-0 rounded-xl px-4" disabled={busy || !name.trim()} onClick={() => void add()}>
                 添加
               </Button>
             </div>

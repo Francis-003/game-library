@@ -20,7 +20,7 @@ export function createMemoryRuntime() {
       'sealed_a', 'sealed_b', 'submitted_at_a', 'submitted_at_b', 'created_at'],
     custom_scenes: ['id', 'name', 'added_by', 'enabled', 'created_at'],
     users: ['id', 'name', 'token', 'last_seen', 'created_at'],
-    invites: ['id', 'room_code', 'from_name', 'to_name', 'created_at'],
+    invites: ['id', 'room_code', 'game', 'from_name', 'to_name', 'created_at'],
     dreamer_games: ['id', 'code', 'status', 'tier', 'banker_seat', 'token_a', 'token_b',
       'join_key_b', 'nick_a', 'nick_b', 'round_no', 'opened_in_round', 'lucky_box',
       'offer_base', 'offer_amount', 'offer_line', 'offer_sent', 'final_pick',

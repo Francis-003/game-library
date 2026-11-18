@@ -38,12 +38,6 @@ export function LibraryPage() {
           </a>
         ))}
       </section>
-
-      <footer className="mt-auto rounded-2xl bg-muted/50 p-4">
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          上新中：写好页面，在 <code className="font-mono">src/games.ts</code> 注册即可出现在这里。
-        </p>
-      </footer>
     </main>
   );
 }

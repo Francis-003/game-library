@@ -103,8 +103,15 @@ export function useDreamer(session: Session | null) {
       setNotice(null);
       return fresh;
     } catch (error) {
-      if (isSeatError(error)) setLost(true);
-      else void refresh();
+      if (isSeatError(error)) {
+        setLost(true);
+        return null;
+      }
+      // 写请求被拒（相位已过、已经报过价等）必须让人看见原因，
+      // 否则界面只是「点了没反应」。先同步到最新状态，再挂上提示。
+      const text = message(error);
+      await refresh();
+      setNotice(text);
       return null;
     } finally {
       setBusy(false);

@@ -64,7 +64,12 @@ function App() {
   }, [hash]);
 
   const route = parse(hash);
-  if (!user) return <LoginPage onEntered={next => { saveUser(next); setUser(next); }} />;
+  if (!user) return (
+    <>
+      <LoginPage onEntered={next => { saveUser(next); setUser(next); }} />
+      <Toaster position="top-center" />
+    </>
+  );
 
   const authLost = () => { clearUser(); setUser(null); };
   const content = (() => {
@@ -82,8 +87,8 @@ function App() {
     const tab: TabKey | null = route.name === "home" || route.name === "games" || route.name === "me"
       ? route.name : null;
     return (
-      <PresenceProvider user={user} onAuthLost={authLost}>
-        <InviteBanner />
+      <PresenceProvider key={user.name} user={user} onAuthLost={authLost}>
+        <InviteBanner offsetNav={Boolean(tab)} />
         <div className={tab ? "pb-20" : ""}>
           {route.name === "home" && <HomePage />}
           {route.name === "games" && <LibraryPage />}
@@ -96,8 +101,8 @@ function App() {
             </main>
           )}
         </div>
-        {tab && <BottomNav active={tab} inviteCount={0} />}
-        <Toaster />
+        {tab && <BottomNav active={tab} />}
+        <Toaster position="top-center" />
       </PresenceProvider>
     );
   })();

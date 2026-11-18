@@ -105,9 +105,15 @@ export function useRoom(session: Session | null) {
       setNotice(null);
       return fresh;
     } catch (error) {
-      if (isSeatError(error)) setLost(true);
-      // 结果未知（网络断开、5xx）时只重读状态，绝不自动重发写请求。
-      else void refresh();
+      if (isSeatError(error)) {
+        setLost(true);
+        return null;
+      }
+      // 结果未知（网络断开、5xx）时只重读状态，绝不自动重发写请求；
+      // 但要把失败原因留在界面上，不然提交失败看起来就是按钮没反应。
+      const text = message(error);
+      await refresh();
+      setNotice(text);
       return null;
     } finally {
       setBusy(false);

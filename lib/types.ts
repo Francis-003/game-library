@@ -46,8 +46,23 @@ export type JoinResult = { code: string; seat: Seat; token: string; view: RoomVi
 // 无密码全局身份：token 只在登录响应里下发一次，存 localStorage。
 export type UserAuth = { name: string; token: string };
 export type FriendEntry = { name: string; online: boolean };
-export type InviteEntry = { id: string; roomCode: string; fromName: string };
+export type InviteEntry = { id: string; roomCode: string; game: string; fromName: string };
 export type MeSnapshot = { name: string; friends: FriendEntry[]; invites: InviteEntry[] };
+
+// 首页「我的房间」列表：只含公开信息，席位凭据仍在本地 localStorage。
+export type MyRoom = {
+  code: string;
+  game: string;
+  status: "waiting" | "playing";
+  seat: Seat;
+  myNick: string | null;
+  opponentNick: string | null;
+  roundNo: number;
+  tierName: string | null;
+  createdAt: string | null;
+  // 未开始的房间的自动销毁时间；已开局为 null（不会自动销毁）。
+  expiresAt: string | null;
+};
 
 // ---- 白日梦想家 ----
 export type DreamerRole = "player" | "banker";
@@ -73,10 +88,14 @@ export type DreamerOffer = {
 
 export type DreamerResult = {
   dealt: boolean;
-  wonAmount: number;
+  // 买断博弈模型：两方净收益符号相反，一方赚（正）一方赔（负）。
+  playerGain: number;
+  bankerGain: number;
   luckyBox: number | null;
   luckyAmount: number | null;
   finalBoxNo: number | null;
+  finalAmount: number | null;
+  dealAmount: number | null;
 };
 
 // 与 functions/routes.mjs 的 buildDreamerView 一一对应。
@@ -100,6 +119,7 @@ export type DreamerView = {
   offers: DreamerOffer[];
   currentOffer: { roundNo: number; amount: number; line: string | null } | null;
   offerBase: number | null;
+  averageLeft: number | null;
   finalPick: "keep" | "swap" | null;
   result?: DreamerResult;
 };

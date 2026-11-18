@@ -5,7 +5,7 @@ function WordPane({ label, word, tone }: { label: string; word: string; tone: "m
   return (
     <div
       className={cn(
-        "min-w-0 flex-1 rounded-xl border p-4 text-center",
+        "min-w-0 flex-1 rounded-2xl border p-4 text-center shadow-soft",
         tone === "same" && "border-primary/40 bg-primary/10",
         tone === "mine" && "bg-accent",
         tone === "theirs" && "bg-secondary",

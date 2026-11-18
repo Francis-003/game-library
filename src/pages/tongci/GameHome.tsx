@@ -3,7 +3,7 @@ import { ArrowLeft } from "lucide-react";
 import { JoinForm } from "@/components/JoinForm";
 import { Button } from "@/components/ui/button";
 import { api, message } from "@/lib/api";
-import { loadUser, loadSession, saveSession } from "@/lib/session";
+import { loadActiveSession, loadUser, saveSession } from "@/lib/session";
 import type { Session } from "@/lib/session";
 import { toast } from "sonner";
 
@@ -16,7 +16,7 @@ const RULES = [
 // 游戏详情页（全屏）：同词遇见的入口。开一局 / 口令加入 / 规则说明。
 export function GameHome({ onEntered }: { onEntered: (session: Session) => void }) {
   const [pending, setPending] = useState(false);
-  const active = loadSession();
+  const active = loadActiveSession();
   const nick = loadUser()?.name ?? "";
 
   async function create() {

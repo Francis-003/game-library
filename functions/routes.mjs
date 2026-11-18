@@ -3,7 +3,7 @@
 import { normalizeWord } from './shared/normalize.mjs';
 import { builtinScenes, builtinSceneNames, pickScene } from './shared/scenes.mjs';
 import {
-  MAX_LINE, TIERS, isTier, baseOffer, offerWithinAdjust, remainingAmounts, shuffleLadder,
+  MAX_LINE, TIERS, isTier, baseOffer, rawAverage, remainingAmounts, shuffleLadder,
 } from './shared/dreamer.mjs';
 
 const CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -18,16 +18,20 @@ const ONLINE_WINDOW_MS = 90_000;
 const INVITE_TTL_MS = 120_000;
 const FRIENDS_LIMIT = 200;
 const INVITES_LIMIT = 20;
+// 未开始的对局超过这个时间自动销毁。轮询不续命：否则房主挂着页面就永远不会过期。
+const WAITING_TTL_MS = 5 * 60_000;
+// 单次清理上限：心跳每 10 秒跑一次，积压的房间分几轮清完即可。
+const SWEEP_LIMIT = 50;
 
 // 内部读取字段：token 只出现在这里，任何响应 DTO 都不转发它。
-const ROOM_FIELDS = 'id,code,status,current_round,round_id,scene_text,scene_source,token_a,token_b,join_key_b,nick_a,nick_b,win_round,ended_by,version';
+const ROOM_FIELDS = 'id,code,status,current_round,round_id,scene_text,scene_source,token_a,token_b,join_key_b,nick_a,nick_b,win_round,ended_by,version,created_at,touched_at';
 // 状态推进后重读用的字段，刻意不含 token。
-const ROOM_PUBLIC_FIELDS = 'id,code,status,current_round,round_id,scene_text,scene_source,nick_a,nick_b,win_round,ended_by,version';
+const ROOM_PUBLIC_FIELDS = 'id,code,status,current_round,round_id,scene_text,scene_source,nick_a,nick_b,win_round,ended_by,version,created_at,touched_at';
 const ROUND_FIELDS = 'id,room_id,round_no,word_a,word_b,norm_a,norm_b,sealed_a,sealed_b,submitted_at_a,submitted_at_b';
 
 // 白日梦想家：内部读取字段（含 token）；公开字段刻意不含 token。
-const DREAMER_GAME_FIELDS = 'id,code,status,tier,banker_seat,token_a,token_b,join_key_b,nick_a,nick_b,round_no,lucky_box,final_pick,deal_taken,won_amount,version';
-const DREAMER_GAME_PUBLIC_FIELDS = 'id,code,status,tier,banker_seat,nick_a,nick_b,round_no,lucky_box,final_pick,deal_taken,won_amount,version';
+const DREAMER_GAME_FIELDS = 'id,code,status,tier,banker_seat,token_a,token_b,join_key_b,nick_a,nick_b,round_no,lucky_box,final_pick,deal_taken,won_amount,version,created_at,touched_at';
+const DREAMER_GAME_PUBLIC_FIELDS = 'id,code,status,tier,banker_seat,nick_a,nick_b,round_no,lucky_box,final_pick,deal_taken,won_amount,version,created_at,touched_at';
 
 // 白日梦想家：箱子行与报价行的读取字段。
 const DREAMER_BOX_FIELDS = 'id,game_id,box_no,amount,opened,opened_round';
@@ -80,7 +84,61 @@ export function application({ db, BackendError }) {
     const found = rows(await db.from('rooms').select(fields).eq('code', code).limit(1));
     // 口令错误与房间不存在返回同一个结果，不给口令枚举留出旁路信号。
     if (!found.length) fail('not_found', 404);
-    return found[0];
+    const room = found[0];
+    // 过期房间当场销毁并报 not_found：与「从来没有过这个口令」完全同形，不泄露房间存在过。
+    if (isLapsed(room)) {
+      await destroyRoom(room);
+      fail('not_found', 404);
+    }
+    return room;
+  }
+
+  // 未开始的对局超过 TTL 视为作废。基准取 touched_at（真实操作会顺延），
+  // 轮询读状态不续命——否则房主挂着页面这间房就永远不会被回收。
+  function isLapsed(row) {
+    if (row.status !== 'waiting') return false;
+    const since = Date.parse(row.touched_at ?? row.created_at ?? '');
+    return Number.isFinite(since) && Date.now() - since > WAITING_TTL_MS;
+  }
+
+  // 前端展示「还有几分钟自动销毁」用的绝对时间戳（ISO），不依赖客户端时钟偏差之外的东西。
+  function expiresAtOf(row) {
+    const since = Date.parse(row.touched_at ?? row.created_at ?? '');
+    if (!Number.isFinite(since)) return null;
+    return new Date(since + WAITING_TTL_MS).toISOString();
+  }
+
+  // 先删子行再删主行：schema 里没有 ON DELETE CASCADE，反序会撞外键。
+  async function destroyRoom(room) {
+    rows(await db.from('room_rounds').delete().eq('room_id', room.id).select('id'));
+    rows(await db.from('rooms').delete().eq('id', room.id).select('id'));
+  }
+
+  async function destroyDreamerGame(game) {
+    rows(await db.from('dreamer_boxes').delete().eq('game_id', game.id).select('id'));
+    rows(await db.from('dreamer_offers').delete().eq('game_id', game.id).select('id'));
+    rows(await db.from('dreamer_games').delete().eq('id', game.id).select('id'));
+  }
+
+  // 回收过期房间：只取 waiting 的行，按 touched_at 升序，遇到第一个未过期的就可以停。
+  // 心跳接口与建房前各跑一次，不额外依赖定时任务（线上没有 cron）。
+  async function sweepExpired() {
+    const now = Date.now();
+    const since = now - WAITING_TTL_MS;
+    const staleRooms = rows(await db.from('rooms').select('id,code,status,touched_at,created_at')
+      .eq('status', 'waiting').order('touched_at').limit(SWEEP_LIMIT));
+    for (const room of staleRooms) {
+      const touched = Date.parse(room.touched_at ?? room.created_at ?? '');
+      if (!Number.isFinite(touched) || touched >= since) break;
+      await destroyRoom(room);
+    }
+    const staleGames = rows(await db.from('dreamer_games').select('id,code,status,touched_at,created_at')
+      .eq('status', 'waiting').order('touched_at').limit(SWEEP_LIMIT));
+    for (const game of staleGames) {
+      const touched = Date.parse(game.touched_at ?? game.created_at ?? '');
+      if (!Number.isFinite(touched) || touched >= since) break;
+      await destroyDreamerGame(game);
+    }
   }
 
   async function ensureRound(roomId, roundNo, id = crypto.randomUUID()) {
@@ -227,7 +285,13 @@ export function application({ db, BackendError }) {
     const found = rows(await db.from('dreamer_games')
       .select(fields).eq('code', code).limit(1));
     if (!found.length) fail('not_found', 404);
-    return found[0];
+    const game = found[0];
+    // 与同词遇见同语义：过期即销毁，响应与「从来没有过」无法区分。
+    if (isLapsed(game)) {
+      await destroyDreamerGame(game);
+      fail('not_found', 404);
+    }
+    return game;
   }
 
   function roleOf(game, seat) {
@@ -304,18 +368,31 @@ export function application({ db, BackendError }) {
       currentOffer: currentOfferRow && currentOfferRow.decision === ''
         ? { roundNo: currentOfferRow.round_no, amount: currentOfferRow.amount, line: currentOfferRow.line || null }
         : null,
-      // 参考价只在该银行家出价时下发；它本可由公开金额板与公开系数推出，下发只为省去前端复算。
+      // 出价提示：未翻面额均值 + 系数参考价，都只在银行家出价阶段下发（前端可自行从金额板算出）。
       offerBase: roleOf(game, seat) === 'banker' && (phase === 'offer' || phase === 'final_offer')
         ? baseOffer(boxes, offers.length) : null,
+      averageLeft: roleOf(game, seat) === 'banker' && (phase === 'offer' || phase === 'final_offer')
+        ? rawAverage(boxes) : null,
       finalPick: game.final_pick || null,
     };
     if (revealed) {
+      const finalBoxNo = game.deal_taken ? null
+        : (game.final_pick === 'swap' && restBoxes.length ? restBoxes[0].box_no : game.lucky_box);
+      const finalBoxRow = finalBoxNo ? boxes.find(box => box.box_no === finalBoxNo) : null;
+      // 买断博弈模型：未成交到底时，玩家拿最终持有箱的金额 V，银行家赔付 V。
+      // 中途成交时，成交价 P 是银行家买断幸运箱的钱：玩家得 P，银行家付出 P。
+      // 无论哪种，钱从银行家流向玩家：playerGain = 玩家净收入，bankerGain = 其相反数。
+      const playerGain = game.deal_taken ? game.won_amount : (finalBoxRow ? finalBoxRow.amount : 0);
       view.result = {
         dealt: Boolean(game.deal_taken),
-        wonAmount: game.won_amount,
+        // 双方各自的净收益，符号相反：一方为正（赚），另一方为负（赔）。
+        playerGain: Math.round(playerGain * 100) / 100,
+        bankerGain: Math.round(-playerGain * 100) / 100,
         luckyBox: game.lucky_box || null,
         luckyAmount: luckyBoxRow ? luckyBoxRow.amount : null,
-        finalBoxNo: game.deal_taken ? null : (game.final_pick === 'swap' && restBoxes.length ? restBoxes[0].box_no : game.lucky_box),
+        finalBoxNo,
+        finalAmount: finalBoxRow ? finalBoxRow.amount : null,
+        dealAmount: game.deal_taken ? game.won_amount : null,
       };
     }
     return view;
@@ -406,17 +483,66 @@ export function application({ db, BackendError }) {
       const me = await userByToken(text(query.get('token')));
       const now = Date.now();
       await db.from('users').update({ last_seen: new Date(now).toISOString() }).eq('id', me.id);
+      // 借在线用户的心跳顺带回收过期房间，线上没有 cron，这是最省事的触发点。
+      await sweepExpired();
       const people = rows(await db.from('users').select('name,last_seen')
         .order('created_at').limit(FRIENDS_LIMIT));
       const friends = people
         .filter(person => person.name !== me.name)
         .map(person => ({ name: person.name, online: now - new Date(person.last_seen).getTime() < ONLINE_WINDOW_MS }));
-      const inviteRows = rows(await db.from('invites').select('id,room_code,from_name,to_name,created_at')
+      const inviteRows = rows(await db.from('invites').select('id,room_code,game,from_name,to_name,created_at')
         .eq('to_name', me.name).order('created_at', { ascending: false }).limit(INVITES_LIMIT));
       const invites = inviteRows
         .filter(row => now - new Date(row.created_at).getTime() < INVITE_TTL_MS)
-        .map(row => ({ id: row.id, roomCode: row.room_code, fromName: row.from_name }));
+        .map(row => ({ id: row.id, roomCode: row.room_code, game: row.game || 'tongci', fromName: row.from_name }));
       return json({ name: me.name, friends, invites });
+    }
+
+    // 我在进行中的房间：首页下半部分的数据源。
+    // 身份只靠昵称匹配（与全站「名字即账号、好友=全部用户」的简化模型一致），
+    // 因此只返回房间口令等公开信息，席位凭据仍然只在本地 localStorage。
+    if (path === '/api/me/rooms' && request.method === 'GET') {
+      const me = await userByToken(text(query.get('token')));
+      await sweepExpired();
+      const mine = [];
+      // 同词遇见：房主与加入者分开查，eq 是唯一可用的过滤方式。
+      for (const [seat, field] of [['a', 'nick_a'], ['b', 'nick_b']]) {
+        const found = rows(await db.from('rooms').select(ROOM_PUBLIC_FIELDS)
+          .eq(field, me.name).order('touched_at', { ascending: false }).limit(20));
+        for (const room of found) {
+          if (room.status !== 'waiting' && room.status !== 'playing') continue;
+          const opponent = seat === 'a' ? 'b' : 'a';
+          mine.push({
+            code: room.code, game: 'tongci', status: room.status, seat,
+            myNick: room[`nick_${seat}`] || null,
+            opponentNick: room[`nick_${opponent}`] || null,
+            roundNo: room.current_round,
+            tierName: null,
+            createdAt: room.created_at ?? null,
+            expiresAt: room.status === 'waiting' ? expiresAtOf(room) : null,
+          });
+        }
+      }
+      for (const [seat, field] of [['a', 'nick_a'], ['b', 'nick_b']]) {
+        const found = rows(await db.from('dreamer_games').select(DREAMER_GAME_PUBLIC_FIELDS)
+          .eq(field, me.name).order('touched_at', { ascending: false }).limit(20));
+        for (const game of found) {
+          if (game.status !== 'waiting' && game.status !== 'playing') continue;
+          const opponent = seat === 'a' ? 'b' : 'a';
+          mine.push({
+            code: game.code, game: 'dreamer', status: game.status, seat,
+            myNick: game[`nick_${seat}`] || null,
+            opponentNick: game[`nick_${opponent}`] || null,
+            roundNo: game.round_no,
+            tierName: TIERS[game.tier]?.name ?? null,
+            createdAt: game.created_at ?? null,
+            expiresAt: game.status === 'waiting' ? expiresAtOf(game) : null,
+          });
+        }
+      }
+      // 新的排前面；同一个 code 在不同游戏里不会重复（显示时按 game 分开）。
+      mine.sort((x, y) => (y.createdAt ?? '').localeCompare(x.createdAt ?? ''));
+      return json({ rooms: mine.slice(0, 20) });
     }
 
     if (path === '/api/rooms' && request.method === 'POST') {
@@ -552,25 +678,44 @@ export function application({ db, BackendError }) {
     // 邀请好友进入 waiting 中的房间：发起者必须是房间席位，目标必须是已注册用户。
     if (path === '/api/invites' && request.method === 'POST') {
       const body = await input(request);
-      const { room, seat } = await authenticate(text(body.code), text(body.token));
-      if (room.status !== 'waiting') fail('room_not_waiting', 409);
+      // game 决定去哪张表验席位：口令在两个游戏里都可能存在，不能只查同词遇见。
+      const game = body.game === 'dreamer' ? 'dreamer' : 'tongci';
       const to = text(body.to);
       if (!to || !within(to, MAX_NICK)) fail('invalid_input', 400);
-      if (to === text(room[`nick_${seat}`])) fail('invalid_input', 400);
+      let code;
+      let seat;
+      let nick;
+      let status;
+      if (game === 'dreamer') {
+        const authed = await authenticateDreamer(text(body.code), text(body.token));
+        code = authed.game.code;
+        seat = authed.seat;
+        nick = text(authed.game[`nick_${seat}`]) || '好友';
+        status = authed.game.status;
+      } else {
+        const authed = await authenticate(text(body.code), text(body.token));
+        code = authed.room.code;
+        seat = authed.seat;
+        nick = text(authed.room[`nick_${seat}`]) || '好友';
+        status = authed.room.status;
+      }
+      if (status !== 'waiting') fail('room_not_waiting', 409);
+      if (to === nick) fail('invalid_input', 400);
       const target = rows(await db.from('users').select('id,name').eq('name', to).limit(1));
       if (!target.length) fail('not_found', 404);
       // 同一房间同一目标的未过期邀请视为幂等成功，不重复堆积。
-      const existing = rows(await db.from('invites').select('id,created_at')
-        .eq('room_code', room.code).eq('to_name', to).limit(5));
+      // 用 room_code + game 一起定位，否则两个游戏撞码时会误判成同一间房。
+      const existing = rows(await db.from('invites').select('id,room_code,game,created_at')
+        .eq('room_code', code).eq('game', game).limit(5));
       const fresh = existing.find(row => Date.now() - new Date(row.created_at).getTime() < INVITE_TTL_MS);
-      if (fresh) return json({ invite: { id: fresh.id, roomCode: room.code, toName: to } });
+      if (fresh) return json({ invite: { id: fresh.id, roomCode: code, game, toName: to } });
       const created = {
-        id: crypto.randomUUID(), room_code: room.code,
-        from_name: text(room[`nick_${seat}`]) || '好友', to_name: to,
+        id: crypto.randomUUID(), room_code: code, game,
+        from_name: nick, to_name: to,
         created_at: new Date().toISOString(),
       };
       rows(await db.from('invites').insert(created).select('id'));
-      return json({ invite: { id: created.id, roomCode: room.code, toName: to } }, 201);
+      return json({ invite: { id: created.id, roomCode: code, game, toName: to } }, 201);
     }
 
     // 领取（进入房间）或忽略之后删除邀请：只删发给自己的，别人的邀请动不了。
@@ -720,9 +865,9 @@ export function application({ db, BackendError }) {
       const base = baseOffer(boxes, offers.length);
       let amount = base;
       if (body.amount != null) {
+        // 出价可为任意非负金额，不做区间限制；只拒绝非数字/负值/无穷。
         if (typeof body.amount !== 'number' || !Number.isFinite(body.amount) || body.amount < 0) fail('invalid_input', 400);
         amount = Math.round(body.amount * 100) / 100;
-        if (!offerWithinAdjust(amount, base)) fail('offer_out_of_range', 400);
       }
       const line = text(body.line ?? '');
       if (!within(line, MAX_LINE)) fail('invalid_input', 400);

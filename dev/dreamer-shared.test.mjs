@@ -19,7 +19,7 @@ const boxes = dreamer.TIERS.standard.ladder.map((amount, index) => ({ amount, op
 const base = dreamer.baseOffer(boxes, 0);
 ok('baseOffer > 0', base > 0, String(base));
 ok('baseOffer = 剩余平均×0.35', Math.abs(base - dreamer.TIERS.standard.ladder.slice(3).reduce((a, b) => a + b, 0) / 13 * 0.35) < 0.01, String(base));
-ok('调整上限', dreamer.offerWithinAdjust(base * 1.2, base) && !dreamer.offerWithinAdjust(base * 1.21, base), String(base));
+ok('rawAverage = 未翻面额均值', Math.abs(dreamer.rawAverage(boxes) - dreamer.TIERS.standard.ladder.slice(3).reduce((a, b) => a + b, 0) / 13) < 0.01, String(dreamer.rawAverage(boxes)));
 ok('isTier', dreamer.isTier('small') && dreamer.isTier('standard') && dreamer.isTier('show') && !dreamer.isTier('nope'));
 ok('shuffle 保持多重集', dreamer.shuffleLadder(dreamer.TIERS.show.ladder).slice().sort((a, b) => a - b)
   .join() === dreamer.TIERS.show.ladder.slice().sort((a, b) => a - b).join());

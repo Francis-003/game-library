@@ -1,4 +1,4 @@
-import { Copy, Link2 } from "lucide-react";
+import { ArrowLeft, Copy, Link2, BookOpen } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,9 +33,16 @@ export function RoomHeader({ view, busy, onFinish }: Props) {
 
   return (
     <header className="sticky top-0 z-20 border-b bg-background/92 backdrop-blur">
-      <div className="mx-auto flex max-w-md items-center gap-2 px-4 py-3">
-        <a href="#/g/tongci" className="shrink-0 text-sm font-semibold">同词遇见</a>
-        <Badge variant="outline" className="rounded-md font-mono text-sm tracking-[0.2em]">{view.code}</Badge>
+      <div className="mx-auto flex max-w-md items-center gap-2 px-4 py-2.5">
+        <a
+          href="#/g/tongci"
+          aria-label="返回游戏首页"
+          className="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-accent active:scale-95"
+        >
+          <ArrowLeft className="size-5" />
+        </a>
+        <span className="shrink-0 text-sm font-semibold">同词遇见</span>
+        <Badge variant="outline" className="rounded-lg font-mono text-sm tracking-[0.2em]">{view.code}</Badge>
         <Button variant="ghost" size="icon-xs" aria-label="复制口令" onClick={() => void copy("code")}>
           <Copy />
         </Button>
@@ -43,8 +50,12 @@ export function RoomHeader({ view, busy, onFinish }: Props) {
           <Link2 />
         </Button>
         <div className="flex-1" />
-        <a href="#/g/tongci/scenes" className="shrink-0 text-sm text-muted-foreground underline-offset-4 hover:underline">
-          场景库
+        <a
+          href="#/g/tongci/scenes"
+          aria-label="场景库"
+          className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
+        >
+          <BookOpen className="size-5" />
         </a>
         {!over && (
           <AlertDialog>

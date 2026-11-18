@@ -51,11 +51,22 @@ export function loadSession(code?: string, game = DEFAULT_GAME): Session | null 
   return session && typeof session.token === "string" ? session : null;
 }
 
+// 只取属于指定游戏的活跃会话。active 可能指向另一个游戏的房间，
+// 同词遇见的首页/游戏页/场景库不能把它当成同词遇见的房间继续用。
+export function loadActiveSession(game = DEFAULT_GAME): Session | null {
+  const session = loadSession();
+  if (!session) return null;
+  return (session.game ?? DEFAULT_GAME) === game ? session : null;
+}
+
 export function saveSession(session: Session) {
   const store = read();
   store.rooms[storeKey(session.game, session.code)] = session;
   store.active = storeKey(session.game, session.code);
   write(store);
+  // 建房/加入是「我的房间」列表变化的唯一入口；通知在线的 presence 立刻重拉一次，
+  // 否则从房间退回首页时要等下一个心跳周期（最长 10 秒）才看得到新房间。
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("tongci:sessions-changed"));
 }
 
 export function activateSession(code: string, game = DEFAULT_GAME) {
@@ -90,9 +101,19 @@ const NICK_KEY = "tongciyujian.nick.v1";
 // 昵称不是身份凭据，只是为了让界面少问一次；席位凭据始终只有服务端下发的 token。
 export function lastNick(): string {
   try {
-    return localStorage.getItem(NICK_KEY)?.slice(0, 12) ?? "";
+    const saved = localStorage.getItem(NICK_KEY)?.slice(0, 12) ?? "";
+    // 老设备只存过登录态、没写过 NICK_KEY：退回上次用户名，别让输入框空着。
+    return saved || (loadUser()?.name ?? "");
   } catch {
     return "";
+  }
+}
+
+function rememberNick(name: string) {
+  try {
+    localStorage.setItem(NICK_KEY, name.slice(0, 12));
+  } catch {
+    // 隐私模式下忽略。
   }
 }
 
@@ -116,6 +137,8 @@ export function loadUser(): UserAuth | null {
 export function saveUser(user: UserAuth) {
   try {
     localStorage.setItem(USER_KEY, JSON.stringify(user));
+    // 登录成功顺带记住昵称：登录门下次能预填，不用每次重打。
+    rememberNick(user.name);
   } catch {
     // 隐私模式下保存失败：本次会话仍可用，刷新后需重新输入用户名。
   }

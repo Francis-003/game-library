@@ -62,10 +62,12 @@ CREATE TABLE app.users (
 );
 
 -- 房间邀请：from_name 指向的房间席位发起，to_name 的用户轮询 me 时领取。
+-- game 区分口令属于哪个游戏（两个游戏的口令空间互不相通，撞码时靠它定位房间）。
 -- 不设状态列：过期靠 created_at 时间窗过滤，接受/忽略都直接删行。
 CREATE TABLE app.invites (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   room_code text NOT NULL,
+  game text NOT NULL DEFAULT 'tongci',
   from_name text NOT NULL,
   to_name text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()

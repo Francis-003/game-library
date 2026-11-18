@@ -1,4 +1,4 @@
-import type { CustomScene, DreamerRole, DreamerView, FriendEntry, InviteEntry, JoinResult, MeSnapshot, RoomView, SceneLibrary, UserAuth } from "./types";
+import type { CustomScene, DreamerRole, DreamerView, FriendEntry, InviteEntry, JoinResult, MeSnapshot, MyRoom, RoomView, SceneLibrary, UserAuth } from "./types";
 
 export class RequestError extends Error {
   constructor(
@@ -140,8 +140,26 @@ function meSnapshot(value: unknown): MeSnapshot {
     invites: invites
       .filter((row): row is InviteEntry =>
         isRecord(row) && typeof row.id === "string" && typeof row.roomCode === "string" && typeof row.fromName === "string")
-      .map(row => ({ id: row.id, roomCode: row.roomCode, fromName: row.fromName })),
+      .map(row => ({
+        id: row.id,
+        roomCode: row.roomCode,
+        // 老行没有 game：按同词遇见处理，与历史行为一致。
+        game: typeof row.game === "string" && row.game ? row.game : "tongci",
+        fromName: row.fromName,
+      })),
   };
+}
+
+// 我的房间列表校验：坏行丢弃，不让一条脏数据毁掉整个首页。
+function myRooms(value: unknown): MyRoom[] {
+  if (!isRecord(value) || !Array.isArray(value.rooms)) throw new RequestError("invalid_response", 0, true);
+  return value.rooms.filter((row): row is MyRoom =>
+    isRecord(row)
+    && typeof row.code === "string"
+    && typeof row.game === "string"
+    && (row.status === "waiting" || row.status === "playing")
+    && (row.seat === "a" || row.seat === "b")
+    && typeof row.roundNo === "number");
 }
 
 export const api = {
@@ -198,10 +216,12 @@ export const api = {
   // 心跳 + 好友在线 + 收到的邀请，一个快照全带回。
   me: (token: string, signal?: AbortSignal) =>
     request<unknown>(withQuery("/api/me", { token }), { signal }).then(meSnapshot),
-  invite: (code: string, token: string, to: string) =>
+  myRooms: (token: string, signal?: AbortSignal) =>
+    request<unknown>(withQuery("/api/me/rooms", { token }), { signal }).then(myRooms),
+  invite: (code: string, token: string, to: string, game = "tongci") =>
     post<{ invite: InviteEntry }>(
       "/api/invites",
-      { code, token, to },
+      { code, token, to, game },
     ).then((body) => body.invite),
   dismissInvite: (token: string, id: string) =>
     post<unknown>("/api/invites/dismiss", { token, id }).then(() => undefined),
@@ -230,7 +250,6 @@ const MESSAGES: Record<string, string> = {
   role_mismatch: "现在不是你的角色回合，等一等。",
   phase_wrong: "现在还不能做这个操作，已同步到最新进度。",
   box_unavailable: "这个箱子现在不能开，换一个吧。",
-  offer_out_of_range: "报价超出参考价的 ±20% 范围，调整后再发。",
   offer_already_sent: "这一轮已经报过价了。",
   decision_made: "已经做过决定了，不能改口。",
   request_failed: "暂时没能完成，稍后再试。",

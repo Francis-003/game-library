@@ -20,16 +20,22 @@ export function DreamerRoom({ code }: { code: string }) {
   const view = room.view;
 
   // 席位凭据丢失时尝试用本地 joinKey 自愈，失败则退回加入卡片。
+  // 只有加入者（seat b）有 joinKey：房主的 token 无法恢复，绝不能拿「加入」去顶替，
+  // 否则房主会把自己变成对手席位。
   useEffect(() => {
     if (!room.lost || !session) return;
+    if (!session.joinKey) {
+      setSession(null);
+      return;
+    }
+    const key = session.joinKey;
     let cancelled = false;
     (async () => {
       try {
-        const key = session.joinKey ?? newJoinKey();
         const result = await api.dreamerJoin(code, key, session.nick);
         if (cancelled) return;
-        saveSession({ ...session, token: result.token, joinKey: key });
-        setSession({ ...session, token: result.token, joinKey: key });
+        saveSession({ ...session, token: result.token });
+        setSession({ ...session, token: result.token });
       } catch {
         if (!cancelled) setSession(null);
       }
@@ -39,7 +45,7 @@ export function DreamerRoom({ code }: { code: string }) {
 
   async function joinAsGuest() {
     const key = newJoinKey();
-    const nick = loadUser()?.name ?? "";
+    const nick = joinInput.trim() || loadUser()?.name || "";
     try {
       const result = await api.dreamerJoin(code, key, nick);
       saveSession({ code: result.code, seat: result.seat, token: result.token, joinKey: key, nick, game: "dreamer" });
@@ -176,6 +182,7 @@ export function DreamerRoom({ code }: { code: string }) {
             ) : (
               <BankerConsole
                 base={view.offerBase}
+                averageLeft={view.averageLeft}
                 busy={room.busy}
                 onOffer={(amount, line) => { void room.actions?.offer(amount, line); }}
               />
@@ -208,12 +215,25 @@ export function DreamerRoom({ code }: { code: string }) {
             </div>
           )}
 
+          {(view.phase === "pick_lucky" || view.phase === "opening") && !isPlayer && (
+            <div className="rounded-xl border bg-muted/30 p-4 text-center text-sm text-muted-foreground">
+              {view.phase === "pick_lucky" ? "玩家正在盲选幸运箱…" : `玩家正在开箱，本轮还剩 ${view.openingsLeft} 个…`}
+            </div>
+          )}
+
           <OfferTimeline offers={view.offers} />
         </>
       )}
 
       {view.status === "ended" && view.result && (
-        <ResultPanel result={view.result} tierName={view.tierName} onRematch={rematch} />
+        <ResultPanel
+          result={view.result}
+          tierName={view.tierName}
+          role={view.role}
+          boxes={view.boxes}
+          offers={view.offers}
+          onRematch={rematch}
+        />
       )}
     </main>
   );

@@ -414,6 +414,7 @@ async function playToFinalPick(nickA, nickB) {
   const entry = seen.body.invites.find(item => item.roomCode === room.code);
   ok('被邀请方能在 me 里看到邀请', Boolean(entry), JSON.stringify(seen.body.invites));
   eq('邀请显示发起人', entry.fromName, '房东');
+  eq('同词遇见邀请带游戏标识', entry.game, 'tongci');
 
   const self = await post('/api/invites', { code: room.code, token: room.token, to: '房东' });
   eq('不能邀请自己', self.status, 400);
@@ -444,6 +445,33 @@ async function playToFinalPick(nickA, nickB) {
   expired.created_at = new Date(Date.now() - 3 * 60_000).toISOString();
   const afterExpire = await get('/api/me', { token: guest.body.token });
   eq('过期邀请自动不再出现', afterExpire.body.invites.some(row => row.id === secondInvite.body.invite.id), false);
+}
+
+// ---------------------------------------------------------------- 白日梦想家的邀请（首页好友弹层用）
+{
+  const guest = await post('/api/users/login', { name: '梦客' });
+  const game = await createDreamer('梦主', 'player', 'small');
+
+  const invite = await post('/api/invites', { code: game.code, token: game.token, to: '梦客', game: 'dreamer' });
+  eq('白日梦想家也能发邀请', invite.status, 201);
+  eq('邀请标明白日梦想家', invite.body.invite.game, 'dreamer');
+
+  const seen = await get('/api/me', { token: guest.body.token });
+  const entry = seen.body.invites.find(row => row.roomCode === game.code);
+  ok('被邀请方看到白日梦想家邀请', Boolean(entry), JSON.stringify(seen.body.invites));
+  eq('邀请里的游戏是 dreamer', entry?.game, 'dreamer');
+
+  // 不传 game 时仍按同词遇见解析：白日梦想家的口令在同词遇见表里查不到。
+  const wrongGame = await post('/api/invites', { code: game.code, token: game.token, to: '梦客' });
+  eq('按同词遇见发白日梦想家邀请失败', wrongGame.status, 404);
+
+  const repeat = await post('/api/invites', { code: game.code, token: game.token, to: '梦客', game: 'dreamer' });
+  eq('白日梦想家重复邀请幂等', repeat.status, 200);
+
+  const joined = await joinDreamer(game.code, '梦客');
+  eq('接受后白日梦想家开局', joined.view.status, 'playing');
+  const late = await post('/api/invites', { code: game.code, token: game.token, to: '梦客', game: 'dreamer' });
+  eq('开局后不能再邀请', late.status, 409);
 }
 
 // ---------------------------------------------------------------- 白日梦想家 · 建局与加入
@@ -510,7 +538,6 @@ async function playToFinalPick(nickA, nickB) {
 // ---------------------------------------------------------------- 白日梦想家 · 全流程
 {
   const { code, bankerToken, playerToken, truth } = await playToFinalPick('流程庄', '流程玩家');
-  void bankerToken;
   let view = await dreamerState(code, playerToken);
   eq('终局 phase final_pick', view.phase, 'final_pick');
   eq('终局轮号', view.roundNo, 5);
@@ -521,10 +548,16 @@ async function playToFinalPick(nickA, nickB) {
   eq('终局保留 200', keep.status, 200);
   view = await dreamerState(code, playerToken);
   eq('keep 后 phase ended', view.phase, 'ended');
-  eq('keep 赢得幸运箱金额', view.result.wonAmount, truth[1]);
+  eq('keep 玩家赚幸运箱金额', view.result.playerGain, Math.round(truth[1] * 100) / 100);
+  eq('keep 银行家赔相同金额', view.result.bankerGain, -Math.round(truth[1] * 100) / 100);
   eq('keep 的 finalBoxNo 是幸运箱', view.result.finalBoxNo, view.result.luckyBox);
+  eq('keep 的 finalAmount', view.result.finalAmount, truth[1]);
   ok('揭晓后金额全部可见', view.boxes.every(box => box.amount !== null));
   eq('揭晓后金额板清空', view.remainingAmounts.length, 0);
+  // 双方视图拿到同一份赚赔结果，前端按各自角色选字段显示。
+  const keepBankerView = await dreamerState(code, bankerToken);
+  eq('两方赚赔数据一致', keepBankerView.result.playerGain, view.result.playerGain);
+  eq('玩家赚 + 银行家赚 = 0', view.result.playerGain + view.result.bankerGain, 0);
 }
 {
   // swap 路径：小档唯一幸运箱是 1 号，最后一个公共箱是 10 号。
@@ -532,7 +565,8 @@ async function playToFinalPick(nickA, nickB) {
   const swap = await post('/api/dreamer/final-pick', { code: swapGame.code, token: swapGame.playerToken, choice: 'swap' });
   eq('终局交换 200', swap.status, 200);
   const swapView = await dreamerState(swapGame.code, swapGame.playerToken);
-  eq('swap 赢得最后一个公共箱金额', swapView.result.wonAmount, swapGame.truth[10]);
+  eq('swap 玩家赚最后一个公共箱金额', swapView.result.playerGain, Math.round(swapGame.truth[10] * 100) / 100);
+  eq('swap 银行家赔相同金额', swapView.result.bankerGain, -Math.round(swapGame.truth[10] * 100) / 100);
   eq('swap 的 finalBoxNo', swapView.result.finalBoxNo, 10);
   const changed = await post('/api/dreamer/final-pick', { code: swapGame.code, token: swapGame.playerToken, choice: 'keep' });
   eq('终局改口 409', changed.status, 409);
@@ -553,7 +587,9 @@ async function playToFinalPick(nickA, nickB) {
   const dealView = await dreamerState(dealGame.code, dealPlayer.token);
   eq('Deal 后 phase ended', dealView.phase, 'ended');
   eq('Deal 标记 dealt', dealView.result.dealt, true);
-  ok('Deal 赢得报价金额', dealView.result.wonAmount === dealView.offers[0].amount);
+  ok('Deal 玩家赚报价金额', dealView.result.playerGain === dealView.offers[0].amount);
+  eq('Deal 银行家赔报价金额', dealView.result.bankerGain, -Math.round(dealView.offers[0].amount * 100) / 100);
+  eq('Deal 的成交价', dealView.result.dealAmount, dealView.offers[0].amount);
   eq('Deal 后轮号停在 1', dealView.roundNo, 1);
 }
 
@@ -601,7 +637,7 @@ async function playToFinalPick(nickA, nickB) {
   eq('重试补上推进', (await dreamerState(a.code, b.token)).roundNo, 3);
 }
 
-// ---------------------------------------------------------------- 白日梦想家 · 报价调整上限
+// ---------------------------------------------------------------- 白日梦想家 · 自由出价与未翻均值
 {
   const adjustGame = await createDreamer('调价庄', 'banker', 'standard');
   const adjustPlayer = await joinDreamer(adjustGame.code, '调价玩家');
@@ -611,12 +647,20 @@ async function playToFinalPick(nickA, nickB) {
     const target = current.boxes.find(box => !box.opened && box.no !== current.luckyBox).no;
     await post('/api/dreamer/open', { code: adjustGame.code, token: adjustPlayer.token, boxNo: target });
   }
-  const base = (await dreamerState(adjustGame.code, adjustGame.token)).offerBase;
-  ok('参考价 > 0', base > 0, String(base));
-  const outsideCap = await post('/api/dreamer/offer', { code: adjustGame.code, token: adjustGame.token, amount: base * 1.21 });
-  eq('参考价×1.21 拒绝', outsideCap.status, 400);
-  eq('超出上限错误码', outsideCap.body.error, 'offer_out_of_range');
-  eq('参考价×1.2 内可过', (await post('/api/dreamer/offer', { code: adjustGame.code, token: adjustGame.token, amount: base * 1.2 })).status, 200);
+  const bankerView = await dreamerState(adjustGame.code, adjustGame.token);
+  ok('参考价 > 0', bankerView.offerBase > 0, String(bankerView.offerBase));
+  ok('未翻均值 > 0', bankerView.averageLeft > 0, String(bankerView.averageLeft));
+  // 出价不限：任意非负金额都接受（含远高于/低于参考价）。
+  eq('任意高出价 200', (await post('/api/dreamer/offer', { code: adjustGame.code, token: adjustGame.token, amount: 999999 })).status, 200);
+  const otherGame = await createDreamer('低庄', 'banker', 'small');
+  const otherPlayer = await joinDreamer(otherGame.code, '低玩家');
+  await post('/api/dreamer/pick-lucky', { code: otherGame.code, token: otherPlayer.token, boxNo: 1 });
+  for (let opened = 0; opened < 3; opened += 1) {
+    const current = await dreamerState(otherGame.code, otherPlayer.token);
+    const target = current.boxes.find(box => !box.opened && box.no !== current.luckyBox).no;
+    await post('/api/dreamer/open', { code: otherGame.code, token: otherPlayer.token, boxNo: target });
+  }
+  eq('低价 0 也接受', (await post('/api/dreamer/offer', { code: otherGame.code, token: otherGame.token, amount: 0 })).status, 200);
 }
 
 // ---------------------------------------------------------------- 白日梦想家 · 再来一局
@@ -632,6 +676,71 @@ async function playToFinalPick(nickA, nickB) {
   const rejoined = await post('/api/dreamer/games/join', { code: rematch.body.code, joinKey: crypto.randomUUID(), nick: '再玩家' });
   eq('新局可加入', rejoined.status, 201);
   eq('新局 phase pick_lucky', rejoined.body.view.phase, 'pick_lucky');
+}
+
+// ---------------------------------------------------------------- 我的房间列表
+{
+  const me = await post('/api/users/login', { name: '列表用户' });
+  const mine = await get('/api/me/rooms', { token: me.body.token });
+  eq('未建房时列表为空', mine.body.rooms.length, 0);
+
+  const host = await newRoom('列表用户');
+  const listed = await get('/api/me/rooms', { token: me.body.token });
+  eq('自己开的房间出现在列表里', listed.body.rooms.length, 1);
+  eq('列表里的口令一致', listed.body.rooms[0].code, host.code);
+  eq('列表标记为同词遇见', listed.body.rooms[0].game, 'tongci');
+  eq('列表标记房主席位', listed.body.rooms[0].seat, 'a');
+  eq('未开始的房间带销毁时间', typeof listed.body.rooms[0].expiresAt, 'string');
+  eq('列表不泄露席位密钥', /token/.test(JSON.stringify(listed.body)), false);
+
+  const guestMe = await post('/api/users/login', { name: '列表客人' });
+  await joinRoom(host, '列表客人');
+  const guestList = await get('/api/me/rooms', { token: guestMe.body.token });
+  eq('加入者也能列出该房间', guestList.body.rooms.length, 1);
+  eq('加入者席位是 b', guestList.body.rooms[0].seat, 'b');
+  eq('开局后不再有销毁时间', guestList.body.rooms[0].expiresAt, null);
+  eq('开局后状态是 playing', guestList.body.rooms[0].status, 'playing');
+
+  const dreamerHost = await createDreamer('列表用户', 'player', 'small');
+  const afterDreamer = await get('/api/me/rooms', { token: me.body.token });
+  const dreamerRow = afterDreamer.body.rooms.find(row => row.code === dreamerHost.code);
+  eq('白日梦想家房间也进列表', Boolean(dreamerRow), true);
+  eq('白日梦想家档位名带上', dreamerRow?.tierName, '小赌怡情');
+}
+
+// ---------------------------------------------------------------- 未开始的房间自动销毁
+{
+  const me = await post('/api/users/login', { name: '过期用户' });
+  // 直接改行上的时间戳来模拟 5 分钟后的状态，不必真的等。
+  const past = new Date(Date.now() - 6 * 60_000).toISOString();
+  const stale = await newRoom('过期用户');
+  const staleRow = backend.runtime.tables.rooms.find(row => row.code === stale.code);
+  staleRow.created_at = past;
+  staleRow.touched_at = past;
+  eq('过期房间读状态返回 404', (await get('/api/rooms/state', { code: stale.code, token: stale.token })).status, 404);
+  eq('过期房间主行已删除', backend.runtime.tables.rooms.some(row => row.code === stale.code), false);
+  eq('过期房间轮次行一并删除', backend.runtime.tables.room_rounds.some(row => row.room_id === staleRow.id), false);
+  eq('过期房间不在我的列表里',
+    (await get('/api/me/rooms', { token: me.body.token })).body.rooms.some(row => row.code === stale.code), false);
+
+  const staleDreamer = await createDreamer('过期用户', 'player', 'small');
+  const staleGame = backend.runtime.tables.dreamer_games.find(row => row.code === staleDreamer.code);
+  staleGame.created_at = past;
+  staleGame.touched_at = past;
+  eq('过期对局读状态返回 404',
+    (await get('/api/dreamer/games/state', { code: staleDreamer.code, token: staleDreamer.token })).status, 404);
+  eq('过期对局主行已删除', backend.runtime.tables.dreamer_games.some(row => row.code === staleDreamer.code), false);
+  eq('过期对局箱子已删除', backend.runtime.tables.dreamer_boxes.some(row => row.game_id === staleGame.id), false);
+
+  // 未到期的房间不能被误删；已开局的历史房间即使创建很久也不销毁。
+  const fresh = await newRoom('过期用户');
+  eq('刚建的房间仍可读', (await get('/api/rooms/state', { code: fresh.code, token: fresh.token })).status, 200);
+  const played = await newRoom('过期用户');
+  await joinRoom(played, '过期搭子');
+  const playedRow = backend.runtime.tables.rooms.find(row => row.code === played.code);
+  playedRow.created_at = past;
+  playedRow.touched_at = past;
+  eq('已开局房间不会过期', (await get('/api/rooms/state', { code: played.code, token: played.token })).status, 200);
 }
 
 // ---------------------------------------------------------------- 标准化用例
