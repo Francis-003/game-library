@@ -5,11 +5,14 @@ import type { DreamerView } from "../lib/types";
 
 const IDLE_SLOW_AFTER = 60_000;
 const MAX_INTERVAL = 6_000;
+// 终局后慢速轮询：对方点「再来一局」是原对局就地重开，口令不变，
+// 只有继续轮询才能看到 status 从 ended 变回 playing。
+const TERMINAL_INTERVAL = 3_000;
 
-// 频率按 phase + 角色分级：轮到操作时最灵敏，等待对方时放慢；终局停止轮询。
-function nextInterval(view: DreamerView | null, role: string | null, idleFor: number): number | null {
+// 频率按 phase + 角色分级：轮到操作时最灵敏，等待对方时放慢；终局放慢到 ~3s 等重开。
+function nextInterval(view: DreamerView | null, role: string | null, idleFor: number): number {
   if (!view) return 1200;
-  if (view.phase === "ended") return null;
+  if (view.phase === "ended") return TERMINAL_INTERVAL;
   let base: number;
   if (view.status === "waiting") base = 1500;
   else if (view.phase === "pick_lucky" || view.phase === "opening") base = 3000;

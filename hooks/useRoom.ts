@@ -5,12 +5,15 @@ import type { RoomView } from "../lib/types";
 
 const IDLE_SLOW_AFTER = 60_000;
 const MAX_INTERVAL = 6_000;
+// 终局后仍需慢速轮询：对方点「再来一局」是原房间就地重开，口令不变，
+// 只有继续轮询才能看到 status 从 ended/matched 变回 playing。
+const TERMINAL_INTERVAL = 3_000;
 
 // 频率按“现在有什么可看”分级：还在自己输入时几乎没有需要同步的东西，
-// 等对方收尾时最值得灵敏；本局进入终态后完全停止轮询。
-function nextInterval(view: RoomView | null, idleFor: number): number | null {
+// 等对方收尾时最值得灵敏；本局进入终态后放慢到 ~3s，专门等对方发起重开。
+function nextInterval(view: RoomView | null, idleFor: number): number {
   if (!view) return 1200;
-  if (view.status === "matched" || view.status === "ended") return null;
+  if (view.status === "matched" || view.status === "ended") return TERMINAL_INTERVAL;
   let base: number;
   if (view.mySealed && !view.opponentSealed) base = 1000;
   else if (view.status === "waiting") base = 1500;

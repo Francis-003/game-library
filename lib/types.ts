@@ -42,6 +42,8 @@ export type CustomScene = {
 export type SceneLibrary = { builtin: BuiltinScene[]; custom: CustomScene[] };
 
 export type JoinResult = { code: string; seat: Seat; token: string; view: RoomView };
+// 再来一局是原房间就地重开：口令与席位凭据都不变，响应不再下发 token。
+export type RematchResult = { code: string; seat: Seat; view: RoomView };
 
 // 无密码全局身份：token 只在登录响应里下发一次，存 localStorage。
 export type UserAuth = { name: string; token: string };
@@ -88,11 +90,13 @@ export type DreamerOffer = {
 
 export type DreamerResult = {
   dealt: boolean;
-  // 买断博弈模型：两方净收益符号相反，一方赚（正）一方赔（负）。
+  // 净收益模型：P = 银行家买断幸运箱的钱（成交价 / 最后一轮报价），V = 幸运箱真实面额。
+  // 玩家净收益 = P − V，银行家净收益 = V − P，两者恒相反。
+  p: number;
+  luckyAmount: number;
   playerGain: number;
   bankerGain: number;
   luckyBox: number | null;
-  luckyAmount: number | null;
   finalBoxNo: number | null;
   finalAmount: number | null;
   dealAmount: number | null;

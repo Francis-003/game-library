@@ -3,6 +3,7 @@ import { ArrowLeft, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BoxGrid } from "./BoxGrid";
+import { InviteFriendsCard } from "@/components/InviteFriendsCard";
 import { BankerConsole } from "./BankerConsole";
 import { FinalPickChoice, PlayerDecide } from "./PlayerDecide";
 import { OfferTimeline, ResultPanel } from "./ResultPanel";
@@ -64,10 +65,10 @@ export function DreamerRoom({ code }: { code: string }) {
     if (!session) return;
     void (async () => {
       try {
-        const result = await api.dreamerRematch(code, session.token, session.nick);
-        const next = { ...session, code: result.code, seat: result.seat, token: result.token, joinKey: null };
-        saveSession(next);
-        window.location.hash = `#/g/dreamer/r/${result.code}`;
+        // 原房间就地重开：口令和席位凭据不变，对手轮询同一个房间即可看到新局。
+        await api.dreamerRematch(code, session.token);
+        void room.refresh();
+        toast.success("新的一局已开始，等 TA 跟上");
       } catch (error) {
         toast.error(message(error));
       }
@@ -134,12 +135,15 @@ export function DreamerRoom({ code }: { code: string }) {
       )}
 
       {view.status === "waiting" && (
-        <div className="space-y-3 rounded-xl border bg-card p-5 text-center shadow-sm">
-          <div className="text-4xl">⏳</div>
-          <h2 className="font-semibold">等待对方加入</h2>
-          <p className="text-sm text-muted-foreground">复制邀请链接发给朋友，两人就能开始。</p>
-          <Button onClick={copyInvite} variant="outline" className="w-full"><Copy className="mr-2 size-4" />复制邀请链接</Button>
-        </div>
+        <>
+          <div className="space-y-3 rounded-xl border bg-card p-5 text-center shadow-sm">
+            <div className="text-4xl">⏳</div>
+            <h2 className="font-semibold">等待对方加入</h2>
+            <p className="text-sm text-muted-foreground">复制邀请链接发给朋友，或在下面直接邀请在线好友。</p>
+            <Button onClick={copyInvite} variant="outline" className="w-full"><Copy className="mr-2 size-4" />复制邀请链接</Button>
+          </div>
+          <InviteFriendsCard code={code} token={session.token} game="dreamer" />
+        </>
       )}
 
       {view.status === "playing" && (

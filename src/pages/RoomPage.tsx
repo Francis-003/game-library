@@ -152,13 +152,13 @@ export function RoomPage({ code }: { code: string }) {
   }
 
   async function rematch() {
-    const result = await api.rematch(code, session!.token, session!.nick);
-    const next: Session = { code: result.code, seat: result.seat, token: result.token, joinKey: null, nick: session!.nick };
-    saveSession(next);
+    // 原房间就地重开：口令和席位凭据都不变，对手轮询同一个房间即可看到新局。
+    await api.rematch(code, session!.token);
+    saveSession(session!);
+    setSession({ ...session! });
     setCelebrationDismissed(false);
-    // 必须换路由而不是就地换 session：RoomPage 按 code 建立，地址栏留着旧房间会让
-    // 分享出去的口令指向已结束的那一局，恢复席位时也会认错房间。
-    window.location.hash = `#/g/tongci/r/${result.code}`;
+    void room.refresh();
+    toast.success("新的一局已开始，等 TA 跟上");
   }
 
   const view = room.view;

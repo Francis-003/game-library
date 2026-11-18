@@ -1,4 +1,4 @@
-import type { CustomScene, DreamerRole, DreamerView, FriendEntry, InviteEntry, JoinResult, MeSnapshot, MyRoom, RoomView, SceneLibrary, UserAuth } from "./types";
+import type { CustomScene, DreamerRole, DreamerView, FriendEntry, InviteEntry, JoinResult, MeSnapshot, MyRoom, RematchResult, RoomView, SceneLibrary, UserAuth } from "./types";
 
 export class RequestError extends Error {
   constructor(
@@ -85,6 +85,15 @@ function joinResult(value: unknown): JoinResult {
   return { code: value.code, seat: value.seat, token: value.token, view: roomView(value.view) };
 }
 
+// 就地重开：响应无 token，口令与席位都不变（与 joinResult 的校验分开）。
+function rematchResult(value: unknown): RematchResult {
+  if (!isRecord(value) || typeof value.code !== "string"
+    || (value.seat !== "a" && value.seat !== "b")) {
+    throw new RequestError("invalid_response", 0, true);
+  }
+  return { code: value.code, seat: value.seat, view: roomView(value.view) };
+}
+
 type DreamerJoined = { code: string; seat: "a" | "b"; token: string; view: DreamerView };
 function dreamerJoined(value: unknown): DreamerJoined {
   if (!isRecord(value) || typeof value.code !== "string" || typeof value.token !== "string"
@@ -92,6 +101,15 @@ function dreamerJoined(value: unknown): DreamerJoined {
     throw new RequestError("invalid_response", 0, true);
   }
   return { code: value.code, seat: value.seat, token: value.token, view: dreamerView(value.view) };
+}
+
+type DreamerRematched = { code: string; seat: "a" | "b"; view: DreamerView };
+function dreamerRematched(value: unknown): DreamerRematched {
+  if (!isRecord(value) || typeof value.code !== "string"
+    || (value.seat !== "a" && value.seat !== "b")) {
+    throw new RequestError("invalid_response", 0, true);
+  }
+  return { code: value.code, seat: value.seat, view: dreamerView(value.view) };
 }
 
 function dreamerView(value: unknown): DreamerView {
@@ -185,8 +203,8 @@ export const api = {
     post<{ view: DreamerView }>("/api/dreamer/decide", { code, token, deal }).then((body) => dreamerView(body.view)),
   dreamerFinalPick: (code: string, token: string, choice: "keep" | "swap") =>
     post<{ view: DreamerView }>("/api/dreamer/final-pick", { code, token, choice }).then((body) => dreamerView(body.view)),
-  dreamerRematch: (code: string, token: string, nick: string) =>
-    post<unknown>("/api/dreamer/rematch", { code, token, ...(nick ? { nick } : {}) }).then(dreamerJoined),
+  dreamerRematch: (code: string, token: string) =>
+    post<unknown>("/api/dreamer/rematch", { code, token }).then(dreamerRematched),
   createRoom: (nick: string) => post<JoinResult>("/api/rooms", { ...(nick ? { nick } : {}) }).then(joinResult),
   joinRoom: (code: string, joinKey: string, nick: string) =>
     post<JoinResult>("/api/rooms/join", { code, joinKey, ...(nick ? { nick } : {}) }).then(joinResult),
@@ -203,8 +221,9 @@ export const api = {
     post<{ view: RoomView }>("/api/rooms/next-round", { code, token }).then((body) => roomView(body.view)),
   finish: (code: string, token: string) =>
     post<{ view: RoomView }>("/api/rooms/finish", { code, token }).then((body) => roomView(body.view)),
-  rematch: (code: string, token: string, nick: string) =>
-    post<JoinResult>("/api/rooms/rematch", { code, token, ...(nick ? { nick } : {}) }).then(joinResult),
+  // 再来一局：原房间就地重开，token 与口令不变。
+  rematch: (code: string, token: string) =>
+    post<unknown>("/api/rooms/rematch", { code, token }).then(rematchResult),
   scenes: (code: string, token: string, signal?: AbortSignal) =>
     request<unknown>(withQuery("/api/scenes", { code, token }), { signal }).then(sceneLibrary),
   addScene: (code: string, token: string, name: string) =>

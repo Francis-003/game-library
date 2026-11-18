@@ -308,10 +308,24 @@ async function playToFinalPick(nickA, nickB) {
   const again = await post('/api/rooms/finish', { code: room.code, token: room.token });
   eq('重复结束被拒绝', again.status, 409);
 
-  const rematch = await post('/api/rooms/rematch', { code: room.code, token: room.token, nick: '小舟' });
-  eq('重开是全新房间', rematch.status, 201);
-  ok('重开房间号不同于旧房间', rematch.body.code !== room.code, `${rematch.body.code} vs ${room.code}`);
-  eq('旧房间保持已结束', (await get('/api/rooms/state', { code: room.code, token: room.token })).body.view.status, 'ended');
+  const rematch = await post('/api/rooms/rematch', { code: room.code, token: room.token });
+  eq('重开原房间 200', rematch.status, 200);
+  eq('重开房间号不变', rematch.body.code, room.code);
+  eq('调用者席位不变', rematch.body.seat, 'a');
+  const restartedA = await get('/api/rooms/state', { code: room.code, token: room.token });
+  const restartedB = await get('/api/rooms/state', { code: room.code, token: guest.token });
+  eq('对手席位凭据仍然有效', restartedB.status, 200);
+  eq('双方都看到新一局已开始', restartedA.body.view.status, 'playing');
+  eq('对手也看到新一局', restartedB.body.view.status, 'playing');
+  eq('新一局回到第 1 轮', restartedA.body.view.round, 1);
+  eq('新一局双方未封存', restartedA.body.view.mySealed, false);
+  eq('历史已清空', restartedA.body.view.history.length, 0);
+  // 双方同时点重开：第二次幂等返回，不应把新一局又重置一遍或报 409。
+  const double = await post('/api/rooms/rematch', { code: room.code, token: room.token });
+  eq('进行中重复重开被拒绝', double.status, 409);
+  await post('/api/rooms/submit', { code: room.code, token: room.token, word: '新词' });
+  const before = await get('/api/rooms/state', { code: room.code, token: room.token });
+  eq('重开后可正常继续玩', before.body.view.mySealed, true);
 }
 
 // ---------------------------------------------------------------- 场景库
@@ -360,9 +374,10 @@ async function playToFinalPick(nickA, nickB) {
   const clash = await post('/api/login', { name: '小舟' });
   eq('错误路径不是登录', clash.status, 404);
 
-  const clash2 = await post('/api/users/login', { name: '小舟' });
-  eq('重名先到先得拒绝', clash2.status, 409);
-  eq('重名错误码', clash2.body.error, 'name_taken');
+  const again = await post('/api/users/login', { name: '小舟' });
+  eq('同名登录直接进入（不再报重名）', again.status, 200);
+  eq('同名登录复用原凭据', again.body.token, created.body.token);
+  ok('同名登录不含错误码', !('error' in again.body));
 
   const emptyName = await post('/api/users/login', { name: '  ' });
   eq('空名被拒绝', emptyName.status, 400);
@@ -389,6 +404,40 @@ async function playToFinalPick(nickA, nickB) {
   await get('/api/me', { token: created.body.token });
   const onlineView = await get('/api/me', { token: second.body.token });
   eq('心跳后恢复在线', onlineView.body.friends.find(f => f.name === '小舟').online, true);
+}
+
+// ---------------------------------------------------------------- 用户 2 小时不活跃自动删除
+{
+  const stale = await post('/api/users/login', { name: '沉睡用户' });
+  eq('沉睡用户创建成功', stale.status, 201);
+  const watcher = await post('/api/users/login', { name: '清醒用户' });
+  // 好友 = 全部用户：另一个账号能看到沉睡用户。
+  let seen = await get('/api/me', { token: watcher.body.token });
+  eq('新用户自动成为所有人的好友', seen.body.friends.some(f => f.name === '沉睡用户'), true);
+
+  // 把沉睡用户的 last_seen 拨回 2 小时零 1 分钟。
+  const row = backend.runtime.tables.users.find(user => user.name === '沉睡用户');
+  row.last_seen = new Date(Date.now() - (2 * 60 * 60_000 + 60_000)).toISOString();
+
+  // 任何用户登录/心跳都会触发回收：这里用清醒用户登录触发。
+  await post('/api/users/login', { name: '清醒用户' });
+  eq('超过 2 小时未登录的用户被删除',
+    backend.runtime.tables.users.some(user => user.name === '沉睡用户'), false);
+  eq('被删用户的 token 立即失效',
+    (await get('/api/me', { token: stale.body.token })).status, 403);
+  seen = await get('/api/me', { token: watcher.body.token });
+  eq('好友列表同步移除被删用户', seen.body.friends.some(f => f.name === '沉睡用户'), false);
+
+  // 同名重新登录 = 新建用户（拿到新 token），不是复活旧账号。
+  const reborn = await post('/api/users/login', { name: '沉睡用户' });
+  eq('过期用户同名登录新建成功', reborn.status, 201);
+  ok('同名新用户 token 不同', reborn.body.token !== stale.body.token);
+  // 未到 2 小时的用户不能被误删。
+  const fresh = await post('/api/users/login', { name: '活跃用户' });
+  await post('/api/users/login', { name: '另一个人' });
+  eq('未过期用户不会被删除',
+    backend.runtime.tables.users.some(user => user.name === '活跃用户'), true);
+  eq('活跃用户 token 仍有效', (await get('/api/me', { token: fresh.body.token })).status, 200);
 }
 
 // ---------------------------------------------------------------- 邀请与接受
@@ -543,31 +592,39 @@ async function playToFinalPick(nickA, nickB) {
   eq('终局轮号', view.roundNo, 5);
   eq('5 次报价历史', view.offers.length, 5);
   ok('每轮报价金额 = 参考价', view.offers.every(offer => offer.amount === offer.base));
-  // keep 路径：赢得幸运箱金额。
+  // 净收益模型：P = 最后一轮银行家报价，V = 幸运箱（1 号）真值，玩家净 = P − V。
+  const lastOffer = view.offers[view.offers.length - 1].amount;
+  const expectedNet = Math.round((lastOffer - truth[1]) * 100) / 100;
   const keep = await post('/api/dreamer/final-pick', { code, token: playerToken, choice: 'keep' });
   eq('终局保留 200', keep.status, 200);
   view = await dreamerState(code, playerToken);
   eq('keep 后 phase ended', view.phase, 'ended');
-  eq('keep 玩家赚幸运箱金额', view.result.playerGain, Math.round(truth[1] * 100) / 100);
-  eq('keep 银行家赔相同金额', view.result.bankerGain, -Math.round(truth[1] * 100) / 100);
+  eq('keep 的 P 是最后一轮报价', view.result.p, lastOffer);
+  eq('keep 的 V 是幸运箱真值', view.result.luckyAmount, Math.round(truth[1] * 100) / 100);
+  eq('keep 玩家净收益 = P − V', view.result.playerGain, expectedNet);
+  eq('keep 银行家净收益 = V − P', view.result.bankerGain, -expectedNet);
   eq('keep 的 finalBoxNo 是幸运箱', view.result.finalBoxNo, view.result.luckyBox);
   eq('keep 的 finalAmount', view.result.finalAmount, truth[1]);
   ok('揭晓后金额全部可见', view.boxes.every(box => box.amount !== null));
   eq('揭晓后金额板清空', view.remainingAmounts.length, 0);
-  // 双方视图拿到同一份赚赔结果，前端按各自角色选字段显示。
+  // 双方视图拿到同一份 P/V 与相反符号的净收益，前端按各自角色选字段显示。
   const keepBankerView = await dreamerState(code, bankerToken);
-  eq('两方赚赔数据一致', keepBankerView.result.playerGain, view.result.playerGain);
-  eq('玩家赚 + 银行家赚 = 0', view.result.playerGain + view.result.bankerGain, 0);
+  eq('两方净收益数据一致', keepBankerView.result.playerGain, view.result.playerGain);
+  eq('玩家净 + 银行家净 = 0', view.result.playerGain + view.result.bankerGain, 0);
 }
 {
   // swap 路径：小档唯一幸运箱是 1 号，最后一个公共箱是 10 号。
+  // 净收益仍按 P − V（P=最后一轮报价，V=1 号幸运箱），不随 keep/swap 改变。
   const swapGame = await playToFinalPick('换箱庄', '换箱玩家');
+  const lastOffer = (await dreamerState(swapGame.code, swapGame.playerToken)).offers.slice(-1)[0].amount;
   const swap = await post('/api/dreamer/final-pick', { code: swapGame.code, token: swapGame.playerToken, choice: 'swap' });
   eq('终局交换 200', swap.status, 200);
   const swapView = await dreamerState(swapGame.code, swapGame.playerToken);
-  eq('swap 玩家赚最后一个公共箱金额', swapView.result.playerGain, Math.round(swapGame.truth[10] * 100) / 100);
-  eq('swap 银行家赔相同金额', swapView.result.bankerGain, -Math.round(swapGame.truth[10] * 100) / 100);
+  const expectedNet = Math.round((lastOffer - swapGame.truth[1]) * 100) / 100;
+  eq('swap 玩家净收益 = P − V', swapView.result.playerGain, expectedNet);
+  eq('swap 银行家净收益 = V − P', swapView.result.bankerGain, -expectedNet);
   eq('swap 的 finalBoxNo', swapView.result.finalBoxNo, 10);
+  eq('swap 的 finalAmount 是交换箱真值', swapView.result.finalAmount, swapGame.truth[10]);
   const changed = await post('/api/dreamer/final-pick', { code: swapGame.code, token: swapGame.playerToken, choice: 'keep' });
   eq('终局改口 409', changed.status, 409);
 }
@@ -587,8 +644,14 @@ async function playToFinalPick(nickA, nickB) {
   const dealView = await dreamerState(dealGame.code, dealPlayer.token);
   eq('Deal 后 phase ended', dealView.phase, 'ended');
   eq('Deal 标记 dealt', dealView.result.dealt, true);
-  ok('Deal 玩家赚报价金额', dealView.result.playerGain === dealView.offers[0].amount);
-  eq('Deal 银行家赔报价金额', dealView.result.bankerGain, -Math.round(dealView.offers[0].amount * 100) / 100);
+  // 净收益模型：P = 成交价，V = 幸运箱（3 号）真值，玩家净 = P − V。
+  const dealV = dealView.boxes.find(box => box.no === dealView.result.luckyBox).amount;
+  eq('Deal 的 P 是成交价', dealView.result.p, dealView.offers[0].amount);
+  eq('Deal 的 V 是幸运箱真值', dealView.result.luckyAmount, dealV);
+  eq('Deal 玩家净收益 = P − V', dealView.result.playerGain,
+    Math.round((dealView.offers[0].amount - dealV) * 100) / 100);
+  eq('Deal 银行家净收益 = V − P', dealView.result.bankerGain,
+    -Math.round((dealView.offers[0].amount - dealV) * 100) / 100);
   eq('Deal 的成交价', dealView.result.dealAmount, dealView.offers[0].amount);
   eq('Deal 后轮号停在 1', dealView.roundNo, 1);
 }
@@ -666,16 +729,32 @@ async function playToFinalPick(nickA, nickB) {
 // ---------------------------------------------------------------- 白日梦想家 · 再来一局
 {
   const first = await playToFinalPick('再庄', '再玩家');
-  const kept = backend.runtime.tables.dreamer_games.find(row => row.code === first.code);
+  // 先把终局抉择做完，对局才进入 ended，才允许再来一局。
+  await post('/api/dreamer/final-pick', { code: first.code, token: first.playerToken, choice: 'keep' });
+  eq('终局已结束', (await dreamerState(first.code, first.playerToken)).status, 'ended');
   const rematch = await post('/api/dreamer/rematch', { code: first.code, token: first.playerToken });
-  eq('玩家发起 rematch 201', rematch.status, 201);
-  eq('rematch 后旧局不动', backend.runtime.tables.dreamer_games.find(row => row.code === first.code).status, kept.status);
-  eq('rematch 调用者成 seat a', rematch.body.seat, 'a');
+  eq('玩家发起 rematch 200', rematch.status, 200);
+  eq('就地重开房间号不变', rematch.body.code, first.code);
+  eq('调用者席位不变', rematch.body.seat, 'b');
   eq('rematch 保持档位', rematch.body.view.tier, 'small');
   eq('rematch 保持角色', rematch.body.view.role, 'player');
-  const rejoined = await post('/api/dreamer/games/join', { code: rematch.body.code, joinKey: crypto.randomUUID(), nick: '再玩家' });
-  eq('新局可加入', rejoined.status, 201);
-  eq('新局 phase pick_lucky', rejoined.body.view.phase, 'pick_lucky');
+  // 双方的原 token 都仍然有效，对手不用拿新口令，轮询同一个 code 就能看到新局。
+  const restartedBanker = await dreamerState(first.code, first.bankerToken);
+  const restartedPlayer = await dreamerState(first.code, first.playerToken);
+  eq('银行家 token 仍有效', restartedBanker.status !== undefined, true);
+  eq('银行家看到新局已开始', restartedBanker.status, 'playing');
+  eq('玩家也看到新局', restartedPlayer.status, 'playing');
+  eq('新局回到 pick_lucky', restartedPlayer.phase, 'pick_lucky');
+  eq('新局幸运箱未选', restartedPlayer.luckyBox, null);
+  eq('新局报价清空', restartedPlayer.offers.length, 0);
+  eq('新局箱子重新洗过（10 箱）', restartedPlayer.boxes.length, 10);
+  ok('新局未开箱', restartedPlayer.boxes.every(box => !box.opened));
+  // 进行中的对局不允许重复重开，避免把别人正在玩的一局重置掉。
+  const double = await post('/api/dreamer/rematch', { code: first.code, token: first.bankerToken });
+  eq('进行中重复重开被拒绝', double.status, 409);
+  // 新局可继续玩：玩家选幸运箱进入开箱阶段。
+  const picked = await post('/api/dreamer/pick-lucky', { code: first.code, token: first.playerToken, boxNo: 1 });
+  eq('重开后可正常选箱', picked.body.view.phase, 'opening');
 }
 
 // ---------------------------------------------------------------- 我的房间列表

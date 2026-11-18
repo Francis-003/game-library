@@ -37,9 +37,9 @@ export function LoginPage({ onEntered }: { onEntered: (user: UserAuth) => void }
         <div className="space-y-2">
           <h1 className="text-3xl font-bold tracking-tight">游戏库</h1>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            输入一个用户名就能进入，不用密码。
+            输入用户名就能进入，不用密码。
             <br />
-            名字先到先得，朋友们会看到它。
+            名字就是你的账号：同名直接进入，新名字自动创建。
           </p>
         </div>
       </header>
@@ -61,7 +61,7 @@ export function LoginPage({ onEntered }: { onEntered: (user: UserAuth) => void }
           </Button>
         </div>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          所有用户自动互为好友；凭据保存在这台设备上，下次直接进入。
+          所有用户自动互为好友；超过 2 小时不登录，账号会自动清除。
         </p>
       </section>
     </main>

@@ -22,6 +22,8 @@ const INVITES_LIMIT = 20;
 const WAITING_TTL_MS = 5 * 60_000;
 // 单次清理上限：心跳每 10 秒跑一次，积压的房间分几轮清完即可。
 const SWEEP_LIMIT = 50;
+// 用户超过 2 小时未登录（心跳）自动删除。线上没有 cron，借登录/心跳触发回收。
+const USER_TTL_MS = 2 * 60 * 60_000;
 
 // 内部读取字段：token 只出现在这里，任何响应 DTO 都不转发它。
 const ROOM_FIELDS = 'id,code,status,current_round,round_id,scene_text,scene_source,token_a,token_b,join_key_b,nick_a,nick_b,win_round,ended_by,version,created_at,touched_at';
@@ -138,6 +140,21 @@ export function application({ db, BackendError }) {
       const touched = Date.parse(game.touched_at ?? game.created_at ?? '');
       if (!Number.isFinite(touched) || touched >= since) break;
       await destroyDreamerGame(game);
+    }
+  }
+
+  // 回收 2 小时未登录（未心跳）的用户。用户是「名字即账号」，没有密码，
+  // 删掉后同名重新登录会作为新用户创建，天然满足「不活跃即删除」。
+  // 顺带清理发给该用户的邀请，避免残留脏数据。线上没有 cron，借登录/心跳触发。
+  async function sweepStaleUsers() {
+    const since = Date.now() - USER_TTL_MS;
+    const stale = rows(await db.from('users').select('id,name,last_seen,created_at')
+      .order('last_seen').limit(SWEEP_LIMIT));
+    for (const person of stale) {
+      const seen = Date.parse(person.last_seen ?? person.created_at ?? '');
+      if (!Number.isFinite(seen) || seen >= since) break;
+      rows(await db.from('invites').delete().eq('to_name', person.name).select('id'));
+      rows(await db.from('users').delete().eq('id', person.id).select('id'));
     }
   }
 
@@ -270,6 +287,35 @@ export function application({ db, BackendError }) {
     return { code, seat: 'a', token };
   }
 
+  // 再来一局：原房间就地重开，口令与双方席位/凭据都不变，只重置轮次、场景和状态。
+  // 双方客户端轮询的是同一个 code，谁都能看到新的一局，不会出现「新房口令没发给对手、
+  // 对手还停在已结束旧房」的脱节。CAS 防双方同时点重开时重复重置；落空的一方
+  // 读回权威状态，若已变成本局的新状态就幂等当作成功。
+  async function restartRoom(room) {
+    const now = new Date().toISOString();
+    const roundId = crypto.randomUUID();
+    const scene = pickScene(await scenePool());
+    if (!scene) fail('no_scene_available', 503);
+    // CAS 守卫取「版本未变 + 仍是终局」：双方同时点重开时只有一方能推进，
+    // 另一方读回权威状态，看到已是本局的新状态就幂等当作成功，不再碰子行。
+    const updated = rows(await db.from('rooms').update({
+      status: 'playing', current_round: 1, round_id: roundId,
+      scene_text: scene.text, scene_source: scene.source,
+      win_round: 0, ended_by: '',
+      version: room.version + 1, touched_at: now,
+    }).eq('id', room.id).eq('version', room.version)
+      .select(ROOM_PUBLIC_FIELDS));
+    if (!updated.length) {
+      const fresh = await loadRoom(room.code, ROOM_PUBLIC_FIELDS);
+      if (fresh.status === 'playing' && fresh.version > room.version) return fresh;
+      fail('version_conflict', 409);
+    }
+    // 状态推进成功后再重置轮次；中途轮询若读到旧 round_id，loadRound 会按 current_round 自愈。
+    rows(await db.from('room_rounds').delete().eq('room_id', room.id).select('id'));
+    await ensureRound(room.id, 1, roundId);
+    return updated[0];
+  }
+
   // ===== 白日梦想家 =====
 
   // 从 token 推导席位；语义与 authenticate 一致（404 防枚举、403 非席位）。
@@ -379,17 +425,21 @@ export function application({ db, BackendError }) {
       const finalBoxNo = game.deal_taken ? null
         : (game.final_pick === 'swap' && restBoxes.length ? restBoxes[0].box_no : game.lucky_box);
       const finalBoxRow = finalBoxNo ? boxes.find(box => box.box_no === finalBoxNo) : null;
-      // 买断博弈模型：未成交到底时，玩家拿最终持有箱的金额 V，银行家赔付 V。
-      // 中途成交时，成交价 P 是银行家买断幸运箱的钱：玩家得 P，银行家付出 P。
-      // 无论哪种，钱从银行家流向玩家：playerGain = 玩家净收入，bankerGain = 其相反数。
-      const playerGain = game.deal_taken ? game.won_amount : (finalBoxRow ? finalBoxRow.amount : 0);
+      const luckyAmount = luckyBoxRow ? luckyBoxRow.amount : 0;
+      // 净收益模型：P = 银行家买断幸运箱的钱（中途成交取成交价，开箱到底取最后一轮银行家报价）；
+      // V = 幸运箱真实面额。玩家净收益 = P − V，银行家净收益 = V − P（两者恒相反）。
+      // 例：P=800、V=520 → 玩家 +280（赚）、银行家 −280（赔）；反之玩家赔、银行家赚。
+      const p = game.deal_taken ? game.won_amount : (offers.length ? offers[offers.length - 1].amount : game.won_amount);
+      const playerGain = p - luckyAmount;
       view.result = {
         dealt: Boolean(game.deal_taken),
-        // 双方各自的净收益，符号相反：一方为正（赚），另一方为负（赔）。
+        // P 与 V 下发供双方结果页各自展示「银行家出价 / 幸运箱面额 / 净收益」。
+        p: Math.round(p * 100) / 100,
+        luckyAmount: Math.round(luckyAmount * 100) / 100,
+        // 两方净收益符号相反：一方为正（赚），另一方为负（赔）。
         playerGain: Math.round(playerGain * 100) / 100,
         bankerGain: Math.round(-playerGain * 100) / 100,
         luckyBox: game.lucky_box || null,
-        luckyAmount: luckyBoxRow ? luckyBoxRow.amount : null,
         finalBoxNo,
         finalAmount: finalBoxRow ? finalBoxRow.amount : null,
         dealAmount: game.deal_taken ? game.won_amount : null,
@@ -442,6 +492,36 @@ export function application({ db, BackendError }) {
     return { code, seat: 'a', token };
   }
 
+  // 再来一局：原对局就地重开。口令、双方席位/token、档位与角色都不变，
+  // 重新洗牌金额箱、清空报价/进度。对手轮询同一个 code 就能看到新局，
+  // 避免「新房口令没发过去、对手留在旧房」的脱节。
+  async function restartDreamerGame(game) {
+    const tier = TIERS[game.tier];
+    const now = new Date().toISOString();
+    // CAS 先推游戏行：双方同时点重开时只有一方生效，另一方读回权威状态幂等返回，
+    // 绝不再次删箱/报价，否则会抹掉对方刚建好的新局。
+    const updated = rows(await db.from('dreamer_games').update({
+      status: 'playing', round_no: 1, lucky_box: 0, final_pick: '',
+      deal_taken: false, won_amount: 0,
+      version: game.version + 1, touched_at: now,
+    }).eq('id', game.id).eq('version', game.version).select(DREAMER_GAME_PUBLIC_FIELDS));
+    if (!updated.length) {
+      const fresh = await loadDreamerGame(game.code, DREAMER_GAME_PUBLIC_FIELDS);
+      if (fresh.status === 'playing' && fresh.version > game.version) return fresh;
+      fail('version_conflict', 409);
+    }
+    rows(await db.from('dreamer_boxes').delete().eq('game_id', game.id).select('id'));
+    rows(await db.from('dreamer_offers').delete().eq('game_id', game.id).select('id'));
+    const ladder = shuffleLadder(tier.ladder);
+    for (let no = 1; no <= tier.boxCount; no += 1) {
+      rows(await db.from('dreamer_boxes').insert({
+        id: crypto.randomUUID(), game_id: game.id, box_no: no, amount: ladder[no - 1],
+        opened: false, opened_round: 0, created_at: now,
+      }).select('id'));
+    }
+    return updated[0];
+  }
+
   function sceneDto(row) {
     return {
       id: row.id, name: row.name, addedBy: row.added_by || null,
@@ -461,20 +541,33 @@ export function application({ db, BackendError }) {
 
     if (path === '/api/health' && request.method === 'GET') return json({ ok: true });
 
-    // 无密码登录：名字即账号，先到先得。重名一律拒绝，不给冒名留口子。
+    // 无密码登录：用户名即账号的唯一标识。同名直接进入（复用原凭据），不存在则新建。
+    // 超过 2 小时未登录的用户在登录/心跳时被回收，回收后同名登录等同新建。
     if (path === '/api/users/login' && request.method === 'POST') {
       const body = await input(request);
       const name = text(body.name);
       if (!name || !within(name, MAX_NICK)) fail('invalid_input', 400);
-      const existing = rows(await db.from('users').select('id,name').eq('name', name).limit(1));
-      if (existing.length) fail('name_taken', 409);
+      // 先回收不活跃用户：这个名字可能刚刚过期，应当作为新账号重新创建。
+      await sweepStaleUsers();
+      const now = new Date().toISOString();
+      const existing = rows(await db.from('users').select('id,name,token').eq('name', name).limit(1));
+      if (existing.length) {
+        // 用户名相同即同一人：刷新活跃时间并返回原凭据，任何设备输入这个名字都是这个账号。
+        await db.from('users').update({ last_seen: now }).eq('id', existing[0].id);
+        return json({ name: existing[0].name, token: existing[0].token });
+      }
       const token = crypto.randomUUID();
       const created = rows(await db.from('users').insertIfAbsent({
         id: crypto.randomUUID(), name, token,
-        last_seen: new Date().toISOString(), created_at: new Date().toISOString(),
+        last_seen: now, created_at: now,
       }, { onConflict: 'name' }).select('id,name,token'));
-      // 并发撞名：插入落空说明同一瞬间别人先注册了同名的账号。
-      if (!created.length) fail('name_taken', 409);
+      // 并发撞名：插入落空说明同一瞬间别人先注册了，按「同名直接进入」取回既有账号。
+      if (!created.length) {
+        const raced = rows(await db.from('users').select('id,name,token').eq('name', name).limit(1));
+        if (!raced.length) fail('db_unavailable', 503);
+        await db.from('users').update({ last_seen: now }).eq('id', raced[0].id);
+        return json({ name: raced[0].name, token: raced[0].token });
+      }
       return json({ name: created[0].name, token: created[0].token }, 201);
     }
 
@@ -483,8 +576,9 @@ export function application({ db, BackendError }) {
       const me = await userByToken(text(query.get('token')));
       const now = Date.now();
       await db.from('users').update({ last_seen: new Date(now).toISOString() }).eq('id', me.id);
-      // 借在线用户的心跳顺带回收过期房间，线上没有 cron，这是最省事的触发点。
+      // 借在线心跳顺带回收：过期房间 + 2 小时未登录的用户。线上没有 cron。
       await sweepExpired();
+      await sweepStaleUsers();
       const people = rows(await db.from('users').select('name,last_seen')
         .order('created_at').limit(FRIENDS_LIMIT));
       const friends = people
@@ -662,10 +756,11 @@ export function application({ db, BackendError }) {
     if (path === '/api/rooms/rematch' && request.method === 'POST') {
       const body = await input(request);
       const { room, seat } = await authenticate(text(body.code), text(body.token));
-      const nick = text(body.nick) || room[`nick_${seat}`] || '';
-      if (!within(nick, MAX_NICK)) fail('invalid_input', 400);
-      const created = await createRoom(nick);
-      return json({ ...created, view: await viewFor(await loadRoom(created.code), 'a') }, 201);
+      // 只有已结束（命中 / 主动结束）的房间能再来一局；进行中的房间不该被重置。
+      if (room.status !== 'ended' && room.status !== 'matched') fail('phase_wrong', 409);
+      const restarted = await restartRoom(room);
+      // 口令、席位和 token 都不变：对手轮询同一个 code 就能看到新的一局。
+      return json({ code: restarted.code, seat, view: await viewFor(restarted, seat) });
     }
 
     if (path === '/api/scenes' && request.method === 'GET') {
@@ -965,14 +1060,13 @@ export function application({ db, BackendError }) {
       return json({ view: await dreamerViewFor(authoritative, seat) });
     }
 
-    // 再来一局：任意席位开新局，调用者成 seat a，档位与角色保持。
+    // 再来一局：任一席位就地重开原对局，口令与双方席位/角色不变，对手轮询即可看到新局。
     if (path === '/api/dreamer/rematch' && request.method === 'POST') {
       const body = await input(request);
       const { game, seat } = await authenticateDreamer(text(body.code), text(body.token));
-      const nick = text(body.nick) || game[`nick_${seat}`] || '';
-      if (!within(nick, MAX_NICK)) fail('invalid_input', 400);
-      const created = await createDreamerGame(nick, game.tier, roleOf(game, seat));
-      return json({ ...created, view: await dreamerViewFor(await loadDreamerGame(created.code), 'a') }, 201);
+      if (game.status !== 'ended') fail('phase_wrong', 409);
+      const restarted = await restartDreamerGame(game);
+      return json({ code: restarted.code, seat, view: await dreamerViewFor(restarted, seat) });
     }
 
     fail('not_found', 404);
