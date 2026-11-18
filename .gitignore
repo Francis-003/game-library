@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+
+# Editor / site generator artifacts
+.qoder-sites/
+.qoder-sites.json
+
+# Tooling & local session data (not part of the app source)
+.mimosa/
+.zcode/
+.zcode-site/
+.zcode-site.json
