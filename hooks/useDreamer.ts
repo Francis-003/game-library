@@ -12,7 +12,7 @@ const TERMINAL_INTERVAL = 3_000;
 // 频率按 phase + 角色分级：轮到操作时最灵敏，等待对方时放慢；终局放慢到 ~3s 等重开。
 function nextInterval(view: DreamerView | null, role: string | null, idleFor: number): number {
   if (!view) return 1200;
-  if (view.phase === "ended") return TERMINAL_INTERVAL;
+  if (view.phase === "ended" || view.rematch) return TERMINAL_INTERVAL;
   let base: number;
   if (view.status === "waiting") base = 1500;
   else if (view.phase === "pick_lucky" || view.phase === "opening") base = 3000;

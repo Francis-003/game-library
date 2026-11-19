@@ -20,9 +20,11 @@ type Props = {
   view: RoomView;
   busy: boolean;
   onFinish: () => void;
+  // 离开房间：若有进行中的再赛邀请，通知对方（best-effort）。
+  onLeave: () => void;
 };
 
-export function RoomHeader({ view, busy, onFinish }: Props) {
+export function RoomHeader({ view, busy, onFinish, onLeave }: Props) {
   const over = view.status === "matched" || view.status === "ended";
 
   async function copy(what: "code" | "link") {
@@ -37,6 +39,7 @@ export function RoomHeader({ view, busy, onFinish }: Props) {
         <a
           href="#/g/tongci"
           aria-label="返回游戏首页"
+          onClick={onLeave}
           className="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-accent active:scale-95"
         >
           <ArrowLeft className="size-5" />

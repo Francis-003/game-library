@@ -13,7 +13,7 @@ const TERMINAL_INTERVAL = 3_000;
 // 等对方收尾时最值得灵敏；本局进入终态后放慢到 ~3s，专门等对方发起重开。
 function nextInterval(view: RoomView | null, idleFor: number): number {
   if (!view) return 1200;
-  if (view.status === "matched" || view.status === "ended") return TERMINAL_INTERVAL;
+  if (view.status === "matched" || view.status === "ended" || view.rematch) return TERMINAL_INTERVAL;
   let base: number;
   if (view.mySealed && !view.opponentSealed) base = 1000;
   else if (view.status === "waiting") base = 1500;

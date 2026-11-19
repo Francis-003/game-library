@@ -190,7 +190,7 @@ function PlayerResult({ result, offers, boxes, onRematch }: {
           <OfferTimeline offers={offers} />
         </div>
       )}
-      <Button onClick={onRematch} className="w-full">再来一局</Button>
+      <Button onClick={onRematch} className="w-full">再来一局（等对方确认）</Button>
     </div>
   );
 }
@@ -251,7 +251,7 @@ function BankerResult({ result, offers, boxes, onRematch }: {
           <OfferTimeline offers={offers} />
         </div>
       )}
-      <Button onClick={onRematch} className="w-full">再来一局</Button>
+      <Button onClick={onRematch} className="w-full">再来一局（等对方确认）</Button>
     </div>
   );
 }

@@ -10,16 +10,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { api, message, RequestError } from "@/lib/api";
-import { loadSession, loadUser, newJoinKey, saveSession } from "@/lib/session";
-import type { Session } from "@/lib/session";
+import { api, message } from "@/lib/api";
+import { asGameId, gameName, gameRegistry, joinAnyGame } from "@/lib/gameRegistry";
+import { loadSession, loadUser, saveSession } from "@/lib/session";
 import type { FriendEntry, MyRoom } from "@/lib/types";
 import { usePresence } from "@/hooks/usePresence";
 import { toast } from "sonner";
 
 const ALPHABET = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/;
-
-const GAME_LABEL: Record<string, string> = { tongci: "同词遇见", dreamer: "白日梦想家" };
 
 // 倒计时每分钟刷一次就够了：只显示到分钟，没必要每秒重渲染整个首页。
 function useNow(intervalMs = 15_000): number {
@@ -65,27 +63,16 @@ export function HomePage() {
       return;
     }
     setPending(true);
-    const joinKey = newJoinKey();
     try {
-      // 首页只有一个输入框：先按同词遇见试，口令不存在再试白日梦想家。
-      let session: Session | null = null;
-      let missing = false;
-      try {
-        const result = await api.joinRoom(target, joinKey, nick);
-        session = { code: result.code, seat: result.seat, token: result.token, joinKey, nick };
-      } catch (error) {
-        if (error instanceof RequestError && error.code === "not_found") missing = true;
-        else throw error;
+      // 口令不属于任何具体游戏：交给注册表按顺序尝试，新增游戏时这里不用改。
+      const session = await joinAnyGame(target, nick);
+      if (!session) {
+        toast.error("没有找到这个口令对应的房间");
+        return;
       }
-      if (!session && missing) {
-        const dreamerKey = newJoinKey();
-        const result = await api.dreamerJoin(target, dreamerKey, nick);
-        session = { code: result.code, seat: result.seat, token: result.token, joinKey: dreamerKey, nick, game: "dreamer" };
-      }
-      if (!session) return;
       saveSession(session);
-      const game = session.game ?? "tongci";
-      window.location.hash = `#/g/${game}/r/${session.code}`;
+      const game = asGameId(session.game);
+      window.location.hash = gameRegistry[game].roomHash(session.code);
     } catch (error) {
       toast.error(message(error));
     } finally {
@@ -210,17 +197,18 @@ export function HomePage() {
               </p>
             )}
             {ongoing.map(room => {
-              const label = GAME_LABEL[room.game] ?? room.game;
+              const game = asGameId(room.game);
+              const label = gameName(game);
               const waiting = room.status === "waiting";
               return (
                 <a
-                  key={`${room.game}:${room.code}`}
-                  href={`#/g/${room.game}/r/${room.code}`}
+                  key={`${game}:${room.code}`}
+                  href={gameRegistry[game].roomHash(room.code)}
                   className="pressable block rounded-2xl border bg-card px-4 py-3.5 shadow-soft transition-colors hover:bg-accent/40"
                 >
                   <div className="flex items-center gap-3">
                     <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-lg" aria-hidden>
-                      {room.game === "dreamer" ? "🎁" : "💬"}
+                      {game === "dreamer" ? "🎁" : "💬"}
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="flex items-center gap-2 text-sm font-medium">

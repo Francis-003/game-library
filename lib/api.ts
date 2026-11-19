@@ -1,4 +1,4 @@
-import type { CustomScene, DreamerRole, DreamerView, FriendEntry, InviteEntry, JoinResult, MeSnapshot, MyRoom, RematchResult, RoomView, SceneLibrary, UserAuth } from "./types";
+import type { CustomScene, DreamerRole, DreamerView, FriendEntry, InviteEntry, JoinResult, MeSnapshot, MyRoom, RematchInfo, RematchResult, RoomView, SceneLibrary, UserAuth } from "./types";
 
 export class RequestError extends Error {
   constructor(
@@ -54,6 +54,16 @@ function withQuery(path: string, params: Record<string, string>) {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+// 再来一局意图：坏值一律按 null 处理，不让脏数据打断对局渲染。
+function rematchInfo(value: unknown): RematchInfo | null {
+  if (!isRecord(value)) return null;
+  const status = value.status;
+  if (status !== "waiting" && status !== "incoming" && status !== "declined") return null;
+  if (value.fromSeat !== "a" && value.fromSeat !== "b") return null;
+  if (typeof value.fromName !== "string") return null;
+  return { status, fromSeat: value.fromSeat, fromName: value.fromName };
+}
+
 // 在服务端返回的形状不符合预期时立刻报错，而不是让 undefined 流进渲染层。
 export function roomView(value: unknown): RoomView {
   if (!isRecord(value)) throw new RequestError("invalid_response", 0, true);
@@ -74,7 +84,7 @@ export function roomView(value: unknown): RoomView {
   if (value.opponentWord !== undefined && typeof value.opponentWord !== "string") {
     throw new RequestError("invalid_response", 0, true);
   }
-  return value as unknown as RoomView;
+  return { ...(value as unknown as RoomView), rematch: rematchInfo(value.rematch) };
 }
 
 function joinResult(value: unknown): JoinResult {
@@ -92,6 +102,21 @@ function rematchResult(value: unknown): RematchResult {
     throw new RequestError("invalid_response", 0, true);
   }
   return { code: value.code, seat: value.seat, view: roomView(value.view) };
+}
+
+// 双方确认版再赛响应：started 表示这一下是否已进入新局（对方已确认/接受）。
+export type RematchActionResult = { code: string; seat: "a" | "b"; started: boolean; view: RoomView | DreamerView };
+function rematchAction(value: unknown, game: string): RematchActionResult {
+  if (!isRecord(value) || typeof value.code !== "string"
+    || (value.seat !== "a" && value.seat !== "b")) {
+    throw new RequestError("invalid_response", 0, true);
+  }
+  return {
+    code: value.code,
+    seat: value.seat,
+    started: value.started === true,
+    view: game === "dreamer" ? dreamerView(value.view) : roomView(value.view),
+  };
 }
 
 type DreamerJoined = { code: string; seat: "a" | "b"; token: string; view: DreamerView };
@@ -121,7 +146,7 @@ function dreamerView(value: unknown): DreamerView {
     || !Array.isArray(value.boxes) || !Array.isArray(value.remainingAmounts) || !Array.isArray(value.offers)) {
     throw new RequestError("invalid_response", 0, true);
   }
-  return value as unknown as DreamerView;
+  return { ...(value as unknown as DreamerView), rematch: rematchInfo(value.rematch) };
 }
 
 function sceneLibrary(value: unknown): SceneLibrary {
@@ -221,9 +246,16 @@ export const api = {
     post<{ view: RoomView }>("/api/rooms/next-round", { code, token }).then((body) => roomView(body.view)),
   finish: (code: string, token: string) =>
     post<{ view: RoomView }>("/api/rooms/finish", { code, token }).then((body) => roomView(body.view)),
-  // 再来一局：原房间就地重开，token 与口令不变。
+  // 再来一局：原房间就地重开，token 与口令不变。（旧接口，仅保留给尚未升级的客户端）
   rematch: (code: string, token: string) =>
     post<unknown>("/api/rooms/rematch", { code, token }).then(rematchResult),
+  // 再来一局 · 双方确认：跨游戏通用，发起/接受/拒绝/退出都走这里。
+  rematchRequest: (game: string, code: string, token: string) =>
+    post<unknown>("/api/rematch/request", { game, code, token }).then(body => rematchAction(body, game)),
+  rematchRespond: (game: string, code: string, token: string, accept: boolean) =>
+    post<unknown>("/api/rematch/respond", { game, code, token, accept }).then(body => rematchAction(body, game)),
+  rematchLeave: (game: string, code: string, token: string) =>
+    post<unknown>("/api/rematch/leave", { game, code, token }).then(body => rematchAction(body, game)),
   scenes: (code: string, token: string, signal?: AbortSignal) =>
     request<unknown>(withQuery("/api/scenes", { code, token }), { signal }).then(sceneLibrary),
   addScene: (code: string, token: string, name: string) =>

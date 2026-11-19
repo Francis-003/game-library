@@ -1,19 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { CelebrateLayer } from "@/components/CelebrateLayer";
 import { HistoryTimeline } from "@/components/HistoryTimeline";
+import { InviteFriendsCard } from "@/components/InviteFriendsCard";
 import { JoinForm } from "@/components/JoinForm";
 import { OpponentChip } from "@/components/OpponentChip";
+import { RematchPrompt } from "@/components/RematchPrompt";
 import { RevealPanel } from "@/components/RevealPanel";
 import { RoomHeader } from "@/components/RoomHeader";
 import { SceneCard } from "@/components/SceneCard";
 import { WordInputCard } from "@/components/WordInputCard";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { api, message } from "@/lib/api";
+import { api } from "@/lib/api";
 import { copyText, inviteUrl } from "@/lib/clipboard";
 import { forgetSession, loadSession, saveSession, type Session } from "@/lib/session";
 import { useRoom } from "@/hooks/useRoom";
-import { usePresence } from "@/hooks/usePresence";
+import { useRematch } from "@/hooks/useRematch";
 import type { RoomView } from "@/lib/types";
 import { toast } from "sonner";
 
@@ -46,22 +48,8 @@ function JoinCard({ code, onJoined }: { code: string; onJoined: (session: Sessio
 }
 
 function WaitingForGuest({ view, session }: { view: RoomView; session: Session }) {
-  const { snapshot, refresh } = usePresence();
-  const [invitedTo, setInvitedTo] = useState<string[]>([]);
-  const onlineFriends = (snapshot?.friends ?? []).filter(friend => friend.online);
-
-  async function invite(friendName: string) {
-    try {
-      await api.invite(view.code, session.token, friendName);
-      setInvitedTo(prev => prev.includes(friendName) ? prev : [...prev, friendName]);
-      toast.success(`已邀请 ${friendName}，等 TA 进入`);
-    } catch (error) {
-      toast.error(message(error));
-    }
-  }
-
   async function share() {
-    const ok = await copyText(inviteUrl(view.code));
+    const ok = await copyText(inviteUrl(view.code, "tongci"));
     toast[ok ? "success" : "error"](ok ? "邀请链接已复制，发给 TA 就能进来" : "复制失败，把口令念给 TA 也行");
   }
 
@@ -80,28 +68,8 @@ function WaitingForGuest({ view, session }: { view: RoomView; session: Session }
         </div>
       </section>
 
-      <section className="space-y-2 rounded-2xl border bg-card p-4 shadow-soft">
-        <h2 className="text-sm font-medium">邀请在线好友</h2>
-        {!snapshot && (
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Spinner className="size-3.5" /> 正在读取好友状态
-          </p>
-        )}
-        {snapshot && onlineFriends.length === 0 && (
-          <p className="text-xs text-muted-foreground">现在没有好友在线，复制口令发给 TA 也行。</p>
-        )}
-        {onlineFriends.map(friend => (
-          <div key={friend.name} className="flex items-center gap-3 rounded-lg border px-3 py-2">
-            <span className="size-2 shrink-0 rounded-full bg-emerald-500" aria-hidden />
-            <span className="min-w-0 flex-1 truncate text-sm">{friend.name}</span>
-            {invitedTo.includes(friend.name) ? (
-              <span className="text-xs text-muted-foreground">已邀请</span>
-            ) : (
-              <Button variant="secondary" size="sm" onClick={() => void invite(friend.name)}>邀请</Button>
-            )}
-          </div>
-        ))}
-      </section>
+      {/* 邀请在线好友：两个游戏共用同一张卡片，不再各自维护一份好友列表与邀请逻辑。 */}
+      <InviteFriendsCard code={view.code} token={session.token} game="tongci" />
     </>
   );
 }
@@ -124,6 +92,18 @@ export function RoomPage({ code }: { code: string }) {
   const room = useRoom(session);
   const [celebrationDismissed, setCelebrationDismissed] = useState(false);
   const recovering = useRef(false);
+  // 再来一局：共享双方确认流程；新局开始时重置庆祝层。
+  const rematch = useRematch({
+    game: "tongci",
+    code,
+    session,
+    refresh: room.refresh,
+    onStarted: () => {
+      saveSession(session!);
+      setSession({ ...session! });
+      setCelebrationDismissed(false);
+    },
+  });
 
   useEffect(() => {
     if (!room.lost || !session || recovering.current) return;
@@ -151,16 +131,6 @@ export function RoomPage({ code }: { code: string }) {
     return <JoinCard code={code} onJoined={next => { setCelebrationDismissed(false); setSession(next); }} />;
   }
 
-  async function rematch() {
-    // 原房间就地重开：口令和席位凭据都不变，对手轮询同一个房间即可看到新局。
-    await api.rematch(code, session!.token);
-    saveSession(session!);
-    setSession({ ...session! });
-    setCelebrationDismissed(false);
-    void room.refresh();
-    toast.success("新的一局已开始，等 TA 跟上");
-  }
-
   const view = room.view;
   const myName = view?.myNick || session.nick || "你";
   const opponentName = view?.opponentNick || "对方";
@@ -172,7 +142,10 @@ export function RoomPage({ code }: { code: string }) {
 
   return (
     <>
-      {view && <RoomHeader view={view} busy={room.busy} onFinish={() => void finish()} />}
+      {view && <RoomHeader view={view} busy={room.busy} onFinish={() => void finish()} onLeave={() => {
+        // 离开房间时若存在再赛邀请，best-effort 通知对方；跳转不等待请求完成。
+        if (view.rematch) void rematch.leave();
+      }} />}
       <Shell>
         {!view && (
           <div className="flex items-center justify-center gap-2 pt-20 text-sm text-muted-foreground">
@@ -206,9 +179,11 @@ export function RoomPage({ code }: { code: string }) {
               <>
                 <RevealPanel view={view} />
                 {view.status === "matched" ? (
-                  <Button size="lg" className="w-full rounded-xl" disabled={room.busy} onClick={() => void rematch().catch(error => toast.error(message(error)))}>
-                    再来一局
-                  </Button>
+                  !view.rematch && (
+                    <Button size="lg" className="w-full rounded-xl" disabled={room.busy} onClick={() => void rematch.request()}>
+                      再来一局
+                    </Button>
+                  )
                 ) : view.status === "ended" ? null : (
                   <div className="space-y-2">
                     <Button
@@ -236,20 +211,33 @@ export function RoomPage({ code }: { code: string }) {
                     你这一轮写的是「{view.myWord}」，TA 没说完，所以按规则没有揭开。
                   </p>
                 )}
-                <Button size="lg" className="mt-5 w-full rounded-xl" disabled={room.busy} onClick={() => void rematch().catch(error => toast.error(message(error)))}>
-                  再来一局
-                </Button>
+                {!view.rematch && (
+                  <Button size="lg" className="mt-5 w-full rounded-xl" disabled={room.busy} onClick={() => void rematch.request()}>
+                    再来一局
+                  </Button>
+                )}
               </section>
+            )}
+            {/* 再来一局进度：发起方等待、对方确认/拒绝、被拒提示，两个游戏共用一张卡。 */}
+            {view.rematch && (view.status === "matched" || view.status === "ended") && (
+              <RematchPrompt
+                info={view.rematch}
+                busy={rematch.busy}
+                onAccept={() => void rematch.accept()}
+                onDecline={() => void rematch.decline()}
+                onCancel={() => void rematch.leave()}
+                onDismiss={() => void rematch.leave()}
+              />
             )}
           </>
         )}
       </Shell>
-      {view?.status === "matched" && view.matched && !celebrationDismissed && (
+      {view?.status === "matched" && view.matched && !celebrationDismissed && !view.rematch && (
         <CelebrateLayer
           winRound={view.winRound ?? view.round}
           busy={room.busy}
           onDismiss={() => setCelebrationDismissed(true)}
-          onRematch={() => void rematch().catch(error => toast.error(message(error)))}
+          onRematch={() => void rematch.request()}
         />
       )}
     </>

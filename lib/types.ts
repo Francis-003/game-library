@@ -1,6 +1,16 @@
 export type Seat = "a" | "b";
 export type RoomStatus = "waiting" | "playing" | "revealed" | "matched" | "ended";
 
+// 再来一局的共享意图，由服务端按下发席位推导，前端只负责展示与操作。
+// - waiting：我发起，等待对方确认；
+// - incoming：对方发起，等待我确认/拒绝；
+// - declined：我发起但对方拒绝或退出。
+export type RematchInfo = {
+  status: "waiting" | "incoming" | "declined";
+  fromSeat: Seat;
+  fromName: string;
+};
+
 export type Scene = { text: string; source: string };
 
 export type HistoryEntry = {
@@ -29,6 +39,7 @@ export type RoomView = {
   matched?: boolean;
   winRound?: number;
   endedBy?: string | null;
+  rematch: RematchInfo | null;
 };
 
 export type BuiltinScene = { name: string; category: string };
@@ -126,4 +137,5 @@ export type DreamerView = {
   averageLeft: number | null;
   finalPick: "keep" | "swap" | null;
   result?: DreamerResult;
+  rematch: RematchInfo | null;
 };

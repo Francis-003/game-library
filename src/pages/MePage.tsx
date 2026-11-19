@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { LogOut, ChevronRight } from "lucide-react";
 import { UserAvatar } from "@/components/UserAvatar";
 import {
@@ -13,13 +12,15 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { clearUser, listSessions } from "@/lib/session";
+import { clearUser } from "@/lib/session";
 import { usePresence } from "@/hooks/usePresence";
+import { gameName, gameRegistry, asGameId } from "@/lib/gameRegistry";
 
-// 我的信息 Tab：账号卡片、本机房间记录、退出登录。没有云端战绩数据，保持本地视角。
+// 我的信息 Tab：账号卡片、进行中的房间、退出登录。
+// 房间列表来自服务端 /api/me/rooms（已过滤过期与已结束房间），不再读本机历史会话，
+// 否则已经销毁的房间会一直挂在列表里。
 export function MePage() {
-  const { snapshot } = usePresence();
-  const [rooms] = useState(() => listSessions());
+  const { snapshot, rooms } = usePresence();
   const name = snapshot?.name ?? "";
 
   function logout() {
@@ -51,26 +52,34 @@ export function MePage() {
 
       <section className="space-y-2">
         <h2 className="px-1 text-sm font-medium">我的房间</h2>
-        {rooms.length === 0 ? (
+        {rooms === null ? (
           <div className="rounded-2xl border border-dashed p-5 text-center text-sm text-muted-foreground">
-            还没有进行过的房间，去 <a href="#/games" className="text-primary underline-offset-4 hover:underline">游戏库</a> 开一局吧。
+            正在读取房间…
+          </div>
+        ) : rooms.length === 0 ? (
+          <div className="rounded-2xl border border-dashed p-5 text-center text-sm text-muted-foreground">
+            还没有进行中的房间，去 <a href="#/games" className="text-primary underline-offset-4 hover:underline">游戏库</a> 开一局吧。
           </div>
         ) : (
           <div className="divide-y rounded-2xl border bg-card shadow-soft">
-            {rooms.map(room => (
-              <a
-                key={`${room.game ?? "tongci"}:${room.code}`}
-                href={`#/g/${room.game ?? "tongci"}/r/${room.code}`}
-                className="pressable flex items-center gap-3 px-4 py-3"
-              >
-                <span className="font-mono text-base font-semibold tracking-[0.2em]">{room.code}</span>
-                <span className="text-xs text-muted-foreground">
-                  {room.game === "dreamer" ? "白日梦想家" : "同词遇见"} · {room.seat === "a" ? "房主" : "成员"} · {room.nick}
-                </span>
-                <span className="min-w-0 flex-1" />
-                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-              </a>
-            ))}
+            {rooms.map(room => {
+              const game = asGameId(room.game);
+              return (
+                <a
+                  key={`${game}:${room.code}`}
+                  href={gameRegistry[game].roomHash(room.code)}
+                  className="pressable flex items-center gap-3 px-4 py-3"
+                >
+                  <span className="font-mono text-base font-semibold tracking-[0.2em]">{room.code}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {gameName(game)} · {room.seat === "a" ? "房主" : "成员"} · {room.myNick ?? ""}
+                    {room.status === "waiting" ? " · 待开始" : " · 进行中"}
+                  </span>
+                  <span className="min-w-0 flex-1" />
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                </a>
+              );
+            })}
           </div>
         )}
       </section>
@@ -97,7 +106,7 @@ export function MePage() {
           </AlertDialogContent>
         </AlertDialog>
         <p className="text-center text-xs text-muted-foreground">
-          游戏库 · 第一个游戏「同词遇见」
+          游戏库 · 和朋友一起玩的小游戏
         </p>
       </section>
     </main>

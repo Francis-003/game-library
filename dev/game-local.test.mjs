@@ -154,7 +154,8 @@ async function playToFinalPick(nickA, nickB) {
 
   const beforeB = await get('/api/rooms/state', { code: room.code, token: b });
   eq('B 揭示前读取状态成功', beforeB.status, 200);
-  ok('B 在揭示前看不到 A 的词', !beforeB.text.includes('雨伞'), beforeB.text);
+  // 只断言保密字段 opponentWord 不下发：场景词可能恰好也是「雨伞」，扫整段文本会误报。
+  ok('B 在揭示前看不到 A 的词', !('opponentWord' in beforeB.body.view), Object.keys(beforeB.body.view).join(','));
   eq('B 只看到对手已封存这一个布尔', beforeB.body.view.opponentSealed, true);
   eq('B 自己的词仍为空', beforeB.body.view.mySealed, false);
 
@@ -820,6 +821,69 @@ async function playToFinalPick(nickA, nickB) {
   playedRow.created_at = past;
   playedRow.touched_at = past;
   eq('已开局房间不会过期', (await get('/api/rooms/state', { code: played.code, token: played.token })).status, 200);
+}
+
+// ---------------------------------------------------------------- 再来一局 · 双方确认（同词遇见）
+{
+  // A 发起：自己仍是终局、看到 waiting；B 仍看到终局 + incoming。
+  const room = await newRoom('再赛甲');
+  const guest = await joinRoom(room, '再赛乙');
+  await post('/api/rooms/finish', { code: room.code, token: room.token });
+  const req = await post('/api/rematch/request', { game: 'tongci', code: room.code, token: room.token });
+  eq('再赛请求 200', req.status, 200);
+  eq('发起方仍是终局，未直接进入新局', req.body.view.status, 'ended');
+  eq('发起方看到 waiting', req.body.view.rematch?.status, 'waiting');
+  const guestView = (await get('/api/rooms/state', { code: room.code, token: guest.token })).body.view;
+  eq('对手端房间仍是终局', guestView.status, 'ended');
+  eq('对手端看到 incoming', guestView.rematch?.status, 'incoming');
+  eq('incoming 来自 A', guestView.rematch?.fromSeat, 'a');
+
+  // B 接受：双方同时进入新的一局。
+  const accept = await post('/api/rematch/respond', { game: 'tongci', code: room.code, token: guest.token, accept: true });
+  eq('接受后本端进入新局', accept.body.started, true);
+  eq('接受后房间 playing', accept.body.view.status, 'playing');
+  const aView = (await get('/api/rooms/state', { code: room.code, token: room.token })).body.view;
+  eq('发起方同步进入新局', aView.status, 'playing');
+  eq('新局无残留再赛意图', aView.rematch, null);
+  eq('新局回到第 1 轮', aView.round, 1);
+}
+
+// B 拒绝：A 收到 declined，双方都留在终局。
+{
+  const room = await newRoom('再赛甲');
+  const guest = await joinRoom(room, '再赛乙');
+  await post('/api/rooms/finish', { code: room.code, token: room.token });
+  await post('/api/rematch/request', { game: 'tongci', code: room.code, token: room.token });
+  const decline = await post('/api/rematch/respond', { game: 'tongci', code: room.code, token: guest.token, accept: false });
+  eq('拒绝后仍是终局', decline.body.view.status, 'ended');
+  const aView = (await get('/api/rooms/state', { code: room.code, token: room.token })).body.view;
+  eq('发起方看到 declined', aView.rematch?.status, 'declined');
+  eq('发起方房间仍未变', aView.status, 'ended');
+}
+
+// B 直接退出（leave）：A 同样收到 declined。
+{
+  const room = await newRoom('再赛甲');
+  const guest = await joinRoom(room, '再赛乙');
+  await post('/api/rooms/finish', { code: room.code, token: room.token });
+  await post('/api/rematch/request', { game: 'tongci', code: room.code, token: room.token });
+  await post('/api/rematch/leave', { game: 'tongci', code: room.code, token: guest.token });
+  const aView = (await get('/api/rooms/state', { code: room.code, token: room.token })).body.view;
+  eq('退出后发起方看到 declined', aView.rematch?.status, 'declined');
+  eq('退出不会直接开局', aView.status, 'ended');
+}
+
+// 双方各自点再来一局 = 双方确认，直接开局。
+{
+  const room = await newRoom('再赛甲');
+  const guest = await joinRoom(room, '再赛乙');
+  await post('/api/rooms/finish', { code: room.code, token: room.token });
+  await post('/api/rematch/request', { game: 'tongci', code: room.code, token: room.token });
+  const both = await post('/api/rematch/request', { game: 'tongci', code: room.code, token: guest.token });
+  eq('双方各点一次直接开局', both.body.started, true);
+  eq('双方确认后 playing', both.body.view.status, 'playing');
+  const aView = (await get('/api/rooms/state', { code: room.code, token: room.token })).body.view;
+  eq('另一端也开局', aView.status, 'playing');
 }
 
 // ---------------------------------------------------------------- 标准化用例

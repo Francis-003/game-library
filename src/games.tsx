@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { gameRegistry } from "@/lib/gameRegistry";
 import { activateSession } from "@/lib/session";
 import { GameHome } from "./pages/tongci/GameHome";
 import { RoomPage } from "./pages/RoomPage";
@@ -23,7 +24,7 @@ export type GameDefinition = {
 export const games: GameDefinition[] = [
   {
     id: "tongci",
-    name: "同词遇见",
+    name: gameRegistry.tongci.name,
     tagline: "只有两个人玩的默契游戏：各自说一个词，说中同一个词，就算遇见。",
     meta: "双人 · 文字 · 默契",
     emoji: "💬",
@@ -46,7 +47,7 @@ export const games: GameDefinition[] = [
   },
   {
     id: "dreamer",
-    name: "白日梦想家",
+    name: gameRegistry.dreamer.name,
     tagline: "双人开箱排雷：盲选幸运箱，一轮轮开箱压价，见好就收还是赌到底？",
     meta: "双人 · 开箱 · 心理战",
     emoji: "🎁",

@@ -39,6 +39,15 @@ const DREAMER_GAME_PUBLIC_FIELDS = 'id,code,status,tier,banker_seat,nick_a,nick_
 const DREAMER_BOX_FIELDS = 'id,game_id,box_no,amount,opened,opened_round';
 const DREAMER_OFFER_FIELDS = 'id,game_id,round_no,base_amount,amount,line,decision';
 
+// 金额保留两位小数。对极大的有限数，先 ×100 再 ÷100 会溢出成 Infinity，
+// 而 Infinity 经 JSON 序列化会变成 null，污染报价历史与结算视图。
+// 这种量级下 IEEE754 双精度本就没有两位小数精度，直接返回原值即为正确结果。
+function roundMoney(value) {
+  if (!Number.isFinite(value)) return value;
+  const scaled = value * 100;
+  return Number.isFinite(scaled) ? Math.round(scaled) / 100 : value;
+}
+
 export function application({ db, BackendError }) {
   const fail = (code, status) => { throw new BackendError(code, status); };
   const rows = result => {
@@ -260,7 +269,10 @@ export function application({ db, BackendError }) {
     const round = knownRound ?? await loadRound(room);
     const rounds = rows(await db.from('room_rounds').select(ROUND_FIELDS)
       .eq('room_id', room.id).order('round_no').limit(HISTORY_LIMIT));
-    return buildSeatView(room, round, rounds, seat);
+    const view = buildSeatView(room, round, rounds, seat);
+    // 再来一局意图：终局才有意义，但这里统一附带，由前端按状态决定是否展示。
+    view.rematch = await rematchInfoFor('tongci', room, seat);
+    return view;
   }
 
   async function createRoom(nick) {
@@ -434,11 +446,11 @@ export function application({ db, BackendError }) {
       view.result = {
         dealt: Boolean(game.deal_taken),
         // P 与 V 下发供双方结果页各自展示「银行家出价 / 幸运箱面额 / 净收益」。
-        p: Math.round(p * 100) / 100,
-        luckyAmount: Math.round(luckyAmount * 100) / 100,
+        p: roundMoney(p),
+        luckyAmount: roundMoney(luckyAmount),
         // 两方净收益符号相反：一方为正（赚），另一方为负（赔）。
-        playerGain: Math.round(playerGain * 100) / 100,
-        bankerGain: Math.round(-playerGain * 100) / 100,
+        playerGain: roundMoney(playerGain),
+        bankerGain: roundMoney(-playerGain),
         luckyBox: game.lucky_box || null,
         finalBoxNo,
         finalAmount: finalBoxRow ? finalBoxRow.amount : null,
@@ -461,7 +473,9 @@ export function application({ db, BackendError }) {
   async function dreamerViewFor(game, seat) {
     const boxes = await loadBoxes(game.id);
     const offers = await loadOffers(game.id);
-    return buildDreamerView(game, boxes, offers, seat);
+    const view = buildDreamerView(game, boxes, offers, seat);
+    view.rematch = await rematchInfoFor('dreamer', game, seat);
+    return view;
   }
 
   // 建局：游戏行先落库（口令冲突重试），再按预生成 id 补箱子行。
@@ -520,6 +534,112 @@ export function application({ db, BackendError }) {
       }).select('id'));
     }
     return updated[0];
+  }
+
+  // ===== 再来一局确认：跨游戏共用 =====
+  // 一方发起即视为该方已确认；另一方接受才就地重开，拒绝/退出则发起方收到通知。
+  // 不在原表加列（迁移方言不支持 ALTER），意图单独存 rematch_requests 表。
+  const REMATCH_TTL_MS = 60_000;
+  const gameServices = {
+    tongci: {
+      // 统一返回 { row, seat }，让邀请/再赛的调用方不必关心每个游戏的行字段名。
+      auth: async (code, token) => {
+        const { room, seat } = await authenticate(code, token);
+        return { row: room, seat };
+      },
+      isTerminal: row => row.status === 'ended' || row.status === 'matched',
+      restart: restartRoom,
+      nameOf: (row, seat) => text(row[`nick_${seat}`]),
+      view: (row, seat) => viewFor(row, seat),
+    },
+    dreamer: {
+      auth: async (code, token) => {
+        const { game, seat } = await authenticateDreamer(code, token);
+        return { row: game, seat };
+      },
+      isTerminal: row => row.status === 'ended',
+      restart: restartDreamerGame,
+      nameOf: (row, seat) => text(row[`nick_${seat}`]),
+      view: (row, seat) => dreamerViewFor(row, seat),
+    },
+  };
+  function rematchService(game) {
+    return gameServices[game === 'dreamer' ? 'dreamer' : 'tongci'];
+  }
+
+  // 清洗过期确认意图：重开/拒绝/作废后都应清掉，避免旧 pending 影响下一局。
+  async function clearRematchRequests(game, code) {
+    rows(await db.from('rematch_requests').delete().eq('game', game).eq('room_code', code).select('id'));
+  }
+
+  // 读取该房间当前有效的确认意图（只认未过期、未消费的 pending）。
+  async function activeRematch(game, code) {
+    const found = rows(await db.from('rematch_requests').select(
+      'id,game,room_code,from_seat,to_seat,from_name,status,created_at,touched_at',
+    ).eq('game', game).eq('room_code', code).eq('status', 'pending').order('created_at').limit(5));
+    const now = Date.now();
+    const fresh = found.find(request => {
+      const since = Date.parse(request.touched_at ?? request.created_at ?? '');
+      return Number.isFinite(since) && now - since <= REMATCH_TTL_MS;
+    });
+    // 过期的意图顺手清掉，避免脏数据长期堆积。
+    for (const request of found) {
+      if (request === fresh) continue;
+      rows(await db.from('rematch_requests').delete().eq('id', request.id).select('id'));
+    }
+    return fresh ?? null;
+  }
+
+  // 给某席位生成它看到的再来一局状态：
+  // - 发起方看到 waiting；
+  // - 接收方看到 incoming（可确认/拒绝）；
+  // - 对方拒绝/退出后，发起方看到 declined，直到它清掉/重新发起。
+  async function rematchInfoFor(game, row, seat) {
+    const pending = await activeRematch(game, row.code);
+    if (pending) {
+      return {
+        status: pending.from_seat === seat ? 'waiting' : 'incoming',
+        fromSeat: pending.from_seat,
+        fromName: pending.from_name,
+      };
+    }
+    // 最近的拒绝记录只给发起方看：按 from_seat 精确过滤，接收方不会误看到别人的拒绝。
+    const declined = rows(await db.from('rematch_requests').select(
+      'id,from_seat,to_seat,status,touched_at,created_at',
+    ).eq('game', game).eq('room_code', row.code).eq('status', 'declined')
+      .eq('from_seat', seat).order('touched_at', { ascending: false }).limit(1));
+    if (declined.length) {
+      return { status: 'declined', fromSeat: declined[0].from_seat, fromName: '' };
+    }
+    return null;
+  }
+
+  // 一方确认的落库写入：UNIQUE(game,room_code,from_seat) 保证幂等。
+  async function putRematchRequest(game, row, fromSeat) {
+    const now = new Date().toISOString();
+    const request = {
+      id: crypto.randomUUID(), game, room_code: row.code,
+      from_seat: fromSeat, to_seat: fromSeat === 'a' ? 'b' : 'a',
+      from_name: text(row[`nick_${fromSeat}`]) || '好友',
+      status: 'pending', created_at: now, touched_at: now,
+    };
+    const inserted = rows(await db.from('rematch_requests').insertIfAbsent(request, {
+      onConflict: 'game,room_code,from_seat',
+    }).select('id,status'));
+    if (inserted.length) return inserted[0];
+    // 已存在：把旧行复位为 pending（可能是 declined / 过期 pending）。
+    const updated = rows(await db.from('rematch_requests').update({
+      status: 'pending', touched_at: now,
+      from_name: request.from_name, to_seat: request.to_seat,
+    }).eq('game', game).eq('room_code', row.code).eq('from_seat', fromSeat)
+      .select('id,status'));
+    return updated[0] ?? null;
+  }
+
+  async function markRematch(game, code, fromSeat, status) {
+    rows(await db.from('rematch_requests').update({
+      status, touched_at: new Date().toISOString(),
+    }).eq('game', game).eq('room_code', code).eq('from_seat', fromSeat).select('id'));
   }
 
   function sceneDto(row) {
@@ -759,6 +879,7 @@ export function application({ db, BackendError }) {
       // 只有已结束（命中 / 主动结束）的房间能再来一局；进行中的房间不该被重置。
       if (room.status !== 'ended' && room.status !== 'matched') fail('phase_wrong', 409);
       const restarted = await restartRoom(room);
+      await clearRematchRequests('tongci', room.code);
       // 口令、席位和 token 都不变：对手轮询同一个 code 就能看到新的一局。
       return json({ code: restarted.code, seat, view: await viewFor(restarted, seat) });
     }
@@ -774,27 +895,15 @@ export function application({ db, BackendError }) {
     if (path === '/api/invites' && request.method === 'POST') {
       const body = await input(request);
       // game 决定去哪张表验席位：口令在两个游戏里都可能存在，不能只查同词遇见。
+      // 席位校验统一走 gameServices（与再来一局共用同一张游戏服务映射）。
       const game = body.game === 'dreamer' ? 'dreamer' : 'tongci';
+      const svc = rematchService(game);
       const to = text(body.to);
       if (!to || !within(to, MAX_NICK)) fail('invalid_input', 400);
-      let code;
-      let seat;
-      let nick;
-      let status;
-      if (game === 'dreamer') {
-        const authed = await authenticateDreamer(text(body.code), text(body.token));
-        code = authed.game.code;
-        seat = authed.seat;
-        nick = text(authed.game[`nick_${seat}`]) || '好友';
-        status = authed.game.status;
-      } else {
-        const authed = await authenticate(text(body.code), text(body.token));
-        code = authed.room.code;
-        seat = authed.seat;
-        nick = text(authed.room[`nick_${seat}`]) || '好友';
-        status = authed.room.status;
-      }
-      if (status !== 'waiting') fail('room_not_waiting', 409);
+      const { row, seat } = await svc.auth(text(body.code), text(body.token));
+      const code = row.code;
+      const nick = svc.nameOf(row, seat) || '好友';
+      if (row.status !== 'waiting') fail('room_not_waiting', 409);
       if (to === nick) fail('invalid_input', 400);
       const target = rows(await db.from('users').select('id,name').eq('name', to).limit(1));
       if (!target.length) fail('not_found', 404);
@@ -962,7 +1071,7 @@ export function application({ db, BackendError }) {
       if (body.amount != null) {
         // 出价可为任意非负金额，不做区间限制；只拒绝非数字/负值/无穷。
         if (typeof body.amount !== 'number' || !Number.isFinite(body.amount) || body.amount < 0) fail('invalid_input', 400);
-        amount = Math.round(body.amount * 100) / 100;
+        amount = roundMoney(body.amount);
       }
       const line = text(body.line ?? '');
       if (!within(line, MAX_LINE)) fail('invalid_input', 400);
@@ -1060,13 +1169,82 @@ export function application({ db, BackendError }) {
       return json({ view: await dreamerViewFor(authoritative, seat) });
     }
 
-    // 再来一局：任一席位就地重开原对局，口令与双方席位/角色不变，对手轮询即可看到新局。
+    // 再来一局：任一席位就地重开原对局（兼容旧客户端；新客户端走 /api/rematch/* 双向确认）。
+    // 兼容路径仍保留「一方点击立即开局」语义，仅用于还在用旧包的客户端。
     if (path === '/api/dreamer/rematch' && request.method === 'POST') {
       const body = await input(request);
       const { game, seat } = await authenticateDreamer(text(body.code), text(body.token));
       if (game.status !== 'ended') fail('phase_wrong', 409);
       const restarted = await restartDreamerGame(game);
+      await clearRematchRequests('dreamer', game.code);
       return json({ code: restarted.code, seat, view: await dreamerViewFor(restarted, seat) });
+    }
+
+    // ===== 再来一局 · 双方确认（跨游戏共用） =====
+    // 一方发起即算该方确认，写 pending；对方接受才就地重开，拒绝/退出则通知发起方。
+    if (path === '/api/rematch/request' && request.method === 'POST') {
+      const body = await input(request);
+      const svc = rematchService(body.game);
+      const { row, seat } = await svc.auth(text(body.code), text(body.token));
+      if (!svc.isTerminal(row)) fail('phase_wrong', 409);
+      const game = body.game === 'dreamer' ? 'dreamer' : 'tongci';
+      // 幂等：本人已 pending 直接读回，不重复写。
+      const pending = await activeRematch(game, row.code);
+      if (pending && pending.from_seat === seat) {
+        return json({ code: row.code, seat, view: await svc.view(row, seat) });
+      }
+      // 对方已发起：本方再点「再来一局」即是接受，双方确认立即开局。
+      if (pending && pending.to_seat === seat) {
+        await clearRematchRequests(game, row.code);
+        const restarted = await svc.restart(row);
+        return json({ code: restarted.code, seat, started: true, view: await svc.view(restarted, seat) });
+      }
+      await putRematchRequest(game, row, seat);
+      return json({ code: row.code, seat, view: await svc.view(row, seat) });
+    }
+
+    if (path === '/api/rematch/respond' && request.method === 'POST') {
+      const body = await input(request);
+      if (typeof body.accept !== 'boolean') fail('invalid_input', 400);
+      const svc = rematchService(body.game);
+      const { row, seat } = await svc.auth(text(body.code), text(body.token));
+      if (!svc.isTerminal(row)) fail('phase_wrong', 409);
+      const game = body.game === 'dreamer' ? 'dreamer' : 'tongci';
+      const pending = await activeRematch(game, row.code);
+      if (!pending || pending.to_seat !== seat) fail('phase_wrong', 409);
+      if (body.accept) {
+        await clearRematchRequests(game, row.code);
+        const restarted = await svc.restart(row);
+        return json({ code: restarted.code, seat, started: true, view: await svc.view(restarted, seat) });
+      }
+      await markRematch(game, row.code, pending.from_seat, 'declined');
+      return json({ code: row.code, seat, view: await svc.view(row, seat) });
+    }
+
+    // 退出房间/放弃再赛：把与自己相关的 pending 标记为 declined，让对方收到通知。
+    // 对方已接受、正在重开时调用，可能读不到终局状态——这里只操作意图表，不校验房间相位。
+    if (path === '/api/rematch/leave' && request.method === 'POST') {
+      const body = await input(request);
+      const svc = rematchService(body.game);
+      const { row, seat } = await svc.auth(text(body.code), text(body.token));
+      const game = body.game === 'dreamer' ? 'dreamer' : 'tongci';
+      const pending = await activeRematch(game, row.code);
+      if (pending && pending.from_seat === seat) {
+        // 发起方自己取消：直接清掉，双方都回到普通终局。
+        await clearRematchRequests(game, row.code);
+        return json({ code: row.code, seat, view: await svc.view(row, seat) });
+      }
+      if (pending && pending.to_seat === seat) {
+        // 接收方退出：标记拒绝，发起方轮询看到 declined。
+        await markRematch(game, row.code, pending.from_seat, 'declined');
+        return json({ code: row.code, seat, view: await svc.view(row, seat) });
+      }
+      // 没有 pending：发起方可能是想清掉「对方不来了」的提示（知道了/取消）。
+      if (!pending) {
+        rows(await db.from('rematch_requests').delete().eq('game', game)
+          .eq('room_code', row.code).eq('from_seat', seat).select('id'));
+      }
+      return json({ code: row.code, seat, view: await svc.view(row, seat) });
     }
 
     fail('not_found', 404);

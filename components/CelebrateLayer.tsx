@@ -18,7 +18,7 @@ export function CelebrateLayer({ winRound, onDismiss, onRematch, busy }: Props) 
         </p>
         <div className="mt-7 grid gap-2">
           <Button size="lg" variant="secondary" className="rounded-xl" disabled={busy} onClick={onRematch}>
-            {busy ? "正在开新局" : "再来一局"}
+            {busy ? "正在发送" : "再来一局"}
           </Button>
           <Button variant="ghost" className="rounded-xl text-primary-foreground hover:bg-white/15 hover:text-white" onClick={onDismiss}>
             看看这一路的词

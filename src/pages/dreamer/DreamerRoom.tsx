@@ -4,10 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BoxGrid } from "./BoxGrid";
 import { InviteFriendsCard } from "@/components/InviteFriendsCard";
+import { RematchPrompt } from "@/components/RematchPrompt";
 import { BankerConsole } from "./BankerConsole";
 import { FinalPickChoice, PlayerDecide } from "./PlayerDecide";
 import { OfferTimeline, ResultPanel } from "./ResultPanel";
 import { useDreamer } from "@/hooks/useDreamer";
+import { useRematch } from "@/hooks/useRematch";
 import { api, message } from "@/lib/api";
 import { copyText, inviteUrl } from "@/lib/clipboard";
 import { loadSession, loadUser, newJoinKey, saveSession } from "@/lib/session";
@@ -19,6 +21,14 @@ export function DreamerRoom({ code }: { code: string }) {
   const [joinInput, setJoinInput] = useState("");
   const room = useDreamer(session);
   const view = room.view;
+  // 再来一局：共享双方确认流程；新局开始时无需重置额外状态。
+  const rematch = useRematch({
+    game: "dreamer",
+    code,
+    session,
+    refresh: room.refresh,
+    onStarted: () => {},
+  });
 
   // 席位凭据丢失时尝试用本地 joinKey 自愈，失败则退回加入卡片。
   // 只有加入者（seat b）有 joinKey：房主的 token 无法恢复，绝不能拿「加入」去顶替，
@@ -61,20 +71,6 @@ export function DreamerRoom({ code }: { code: string }) {
     toast[ok ? "success" : "error"](ok ? "邀请链接已复制" : "复制失败，请手动复制链接");
   }
 
-  function rematch() {
-    if (!session) return;
-    void (async () => {
-      try {
-        // 原房间就地重开：口令和席位凭据不变，对手轮询同一个房间即可看到新局。
-        await api.dreamerRematch(code, session.token);
-        void room.refresh();
-        toast.success("新的一局已开始，等 TA 跟上");
-      } catch (error) {
-        toast.error(message(error));
-      }
-    })();
-  }
-
   if (!session) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-5 px-5 py-8">
@@ -113,7 +109,8 @@ export function DreamerRoom({ code }: { code: string }) {
   return (
     <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-5 py-6">
       <header className="flex items-center gap-3">
-        <a href="#/games" className="text-muted-foreground hover:underline" aria-label="返回游戏库">
+        <a href="#/games" className="text-muted-foreground hover:underline" aria-label="返回游戏库"
+          onClick={() => { if (view?.rematch) void rematch.leave(); }}>
           <ArrowLeft className="size-5" />
         </a>
         <div className="min-w-0 flex-1">
@@ -230,14 +227,27 @@ export function DreamerRoom({ code }: { code: string }) {
       )}
 
       {view.status === "ended" && view.result && (
-        <ResultPanel
-          result={view.result}
-          tierName={view.tierName}
-          role={view.role}
-          boxes={view.boxes}
-          offers={view.offers}
-          onRematch={rematch}
-        />
+        <>
+          {view.rematch ? (
+            <RematchPrompt
+              info={view.rematch}
+              busy={rematch.busy}
+              onAccept={() => void rematch.accept()}
+              onDecline={() => void rematch.decline()}
+              onCancel={() => void rematch.leave()}
+              onDismiss={() => void rematch.leave()}
+            />
+          ) : (
+            <ResultPanel
+              result={view.result}
+              tierName={view.tierName}
+              role={view.role}
+              boxes={view.boxes}
+              offers={view.offers}
+              onRematch={() => void rematch.request()}
+            />
+          )}
+        </>
       )}
     </main>
   );

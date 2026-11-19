@@ -75,6 +75,24 @@ CREATE TABLE app.invites (
 
 CREATE INDEX invites_to_idx ON app.invites (to_name, created_at);
 
+-- 再来一局确认：跨游戏共用。一方发起（pending），另一方接受（双方进入新局）
+-- 或拒绝（发起方收到「对方不来了」）。口令/席位/token 不变，状态只记录意图。
+-- 不设外键：两个游戏的对局在不同表，靠 game + room_code 定位；随对局重开/作废由服务端清理。
+CREATE TABLE app.rematch_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  game text NOT NULL DEFAULT 'tongci',
+  room_code text NOT NULL,
+  from_seat text NOT NULL DEFAULT '',
+  to_seat text NOT NULL DEFAULT '',
+  from_name text NOT NULL DEFAULT '',
+  status text NOT NULL DEFAULT 'pending',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  touched_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (game, room_code, from_seat)
+);
+
+CREATE INDEX rematch_lookup_idx ON app.rematch_requests (game, room_code, status);
+
 -- 白日梦想家 · 开箱排雷。金额梯、开箱表、报价系数的真源在 functions/shared/dreamer.mjs。
 -- 保密模型：双方都不知道未开箱子的金额，数据库之外的任何响应都不携带未开箱的 box→金额映射。
 CREATE TABLE app.dreamer_games (

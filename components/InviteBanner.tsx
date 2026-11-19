@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, message } from "@/lib/api";
+import { gameName, gameRegistry, asGameId } from "@/lib/gameRegistry";
 import { loadUser, newJoinKey, saveSession } from "@/lib/session";
 import { usePresence } from "@/hooks/usePresence";
 import { toast } from "sonner";
@@ -20,20 +21,13 @@ export function InviteBanner({ offsetNav = false }: { offsetNav?: boolean }) {
     if (!user) return;
     setBusy(true);
     try {
-      const joinKey = newJoinKey();
-      if (invite.game === "dreamer") {
-        const result = await api.dreamerJoin(invite.roomCode, joinKey, user.name);
-        saveSession({ code: result.code, seat: result.seat, token: result.token, joinKey, nick: user.name, game: "dreamer" });
-        await api.dismissInvite(user.token, invite.id);
-        await refresh();
-        window.location.hash = `#/g/dreamer/r/${result.code}`;
-        return;
-      }
-      const result = await api.joinRoom(invite.roomCode, joinKey, user.name);
-      saveSession({ code: result.code, seat: result.seat, token: result.token, joinKey, nick: user.name });
+      // 加入与跳转全部交给游戏注册表：接受邀请的逻辑不再按游戏写分支。
+      const game = asGameId(invite.game);
+      const session = await gameRegistry[game].join(invite.roomCode, newJoinKey(), user.name);
+      saveSession(session);
       await api.dismissInvite(user.token, invite.id);
       await refresh();
-      window.location.hash = `#/g/tongci/r/${result.code}`;
+      window.location.hash = gameRegistry[game].roomHash(session.code);
     } catch (error) {
       toast.error(message(error));
       // 房间可能已满或已结束：把这个邀请清掉，避免条目一直挂着。
@@ -65,7 +59,7 @@ export function InviteBanner({ offsetNav = false }: { offsetNav?: boolean }) {
           <p className="text-sm leading-relaxed">
             <span className="font-medium">{invite.fromName}</span>
             <span className="text-muted-foreground">
-              {" "}邀请你进入{invite.game === "dreamer" ? "白日梦想家" : "同词遇见"}房间{" "}
+              {" "}邀请你进入{gameName(invite.game)}房间{" "}
             </span>
             <span className="font-mono font-semibold tracking-[0.15em]">{invite.roomCode}</span>
           </p>

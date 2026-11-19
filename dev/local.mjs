@@ -21,6 +21,8 @@ export function createMemoryRuntime() {
     custom_scenes: ['id', 'name', 'added_by', 'enabled', 'created_at'],
     users: ['id', 'name', 'token', 'last_seen', 'created_at'],
     invites: ['id', 'room_code', 'game', 'from_name', 'to_name', 'created_at'],
+    rematch_requests: ['id', 'game', 'room_code', 'from_seat', 'to_seat', 'from_name',
+      'status', 'created_at', 'touched_at'],
     dreamer_games: ['id', 'code', 'status', 'tier', 'banker_seat', 'token_a', 'token_b',
       'join_key_b', 'nick_a', 'nick_b', 'round_no', 'opened_in_round', 'lucky_box',
       'offer_base', 'offer_amount', 'offer_line', 'offer_sent', 'final_pick',
@@ -29,7 +31,7 @@ export function createMemoryRuntime() {
     dreamer_offers: ['id', 'game_id', 'round_no', 'base_amount', 'amount', 'line', 'decision', 'created_at'],
   };
   const tables = {
-    rooms: [], room_rounds: [], custom_scenes: [], users: [], invites: [],
+    rooms: [], room_rounds: [], custom_scenes: [], users: [], invites: [], rematch_requests: [],
     dreamer_games: [], dreamer_boxes: [], dreamer_offers: [],
   };
   // 故障开关只影响下一次匹配的请求，用于验证恢复路径。
